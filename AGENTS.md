@@ -183,9 +183,14 @@ for the current take. Bump when **starting** a new capture stream.
 
 ## Non-goals (do not grow into)
 
-Audacity, Ardour, DAW, music library, mixer, PipeWire patchbay, effects
-rack, analyzer, conversion suite. Prefer shelling out or pointing users at
+Audacity, Ardour, DAW, **full WAV editor** (cut/copy/paste, multi-undo,
+effects chain), music library, mixer, PipeWire patchbay, effects rack,
+analyzer, conversion suite. Prefer shelling out or pointing users at
 existing PipeWire/Pulse tools when appropriate.
+
+Tape-style “record insert at playhead” is deliberately **not** in the
+core UI; a possible minimal splice→new-take design is noted in TODO.md
+if that need returns without turning the app into an editor.
 
 ## Files to know
 

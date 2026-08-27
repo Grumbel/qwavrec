@@ -119,7 +119,10 @@ Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
 
 - [ ] **Recording starts a brand-new take** and does not append (original
   design brainstorm asked for append until File→New). Current behaviour
-  is replace-current + archive previous. Decide and document one model.
+  is replace-current + archive previous. **Decided for now:** whole-take
+  Record + History is the model; tape-style insert is a separate,
+  optional splice→new-take idea (see “Tape-style insert” below) — not
+  silent append.
 
 - [x] **`m_modified` after archive** (quit prompt clarifies cache vs export)  
   Cache files are durable, but we still mark modified and prompt on
@@ -198,8 +201,11 @@ document paths, history, normalize, and WAV peak extraction.
 
 ### Missing vs original product intent
 
-- [ ] Select and cut sections of the recording (user request)
-- [ ] Append recordings until File→New (brainstorm; may reject)
+- [ ] Select and cut sections of the recording (user request) — see
+  **Tape-style insert / edit** below before implementing.
+- [ ] Append recordings until File→New (brainstorm; may reject) — related
+  to tape-style insert; current model is one take = one continuous
+  capture, previous takes stay in History.
 - [ ] True in-RAM buffer without temp files (cache already helps)
 - [ ] Peak-hold / clip LED on meters
 - [ ] Drag-and-drop files onto the window
@@ -208,9 +214,66 @@ document paths, history, normalize, and WAV peak extraction.
 
 ---
 
+### Tape-style insert / second Record (design note — do not implement casually)
+
+**Request:** a second control that records *into* the current document at
+the playhead (old tape punch-in / insert), instead of always starting a
+brand-new take. Attractive for ad-hoc voice notes; dangerous scope creep
+toward a full WAV editor (cut, copy, paste, undo stack, multi-format).
+
+**Tension with current UI**
+
+| Concept today | Tape insert needs |
+|---------------|-------------------|
+| Record = new take; old one archived in History | Mutate or fork the *current* PCM at a time offset |
+| Takes are whole files in `$XDG_CACHE_HOME/qwavrec` | Either rewrite one file or produce a new take that is a splice |
+| A–B selection only limits play/loop | Selection might mean “replace this range” vs “insert at point” |
+| No clipboard, no undo beyond Previous/Next take | Cut/copy/paste implies document editing |
+
+**If we ever want a minimal version (still dead simple)**
+
+Keep History as the only “undo”. No general editor:
+
+1. **One optional action:** e.g. “Record from here” / “Insert record”
+   (not a permanent second big red button unless it stays obvious).
+2. **Semantics:** at Stop of an insert session, build
+   `left = PCM[0..playhead)`, `right = PCM[playhead..end)` (or drop
+   right if *overwrite to end*), `out = left + newCapture [+ right]`.
+3. **Always archive the result as a *new* take**; leave the previous
+   take untouched in History (Previous take recovers the pre-insert
+   version). Never silently destroy the only copy.
+4. **Require matching format** (already 48 kHz mono Int16 on the record
+   path) — no resampling UI.
+5. **No** cut/copy/paste, no multi-track, no effects beyond existing
+   normalize. “Delete selection” could be a later one-liner on the same
+   splice helper (`left + right`) if insert proves useful — still not a
+   suite.
+
+**UI sketch (only if building the minimal version)**
+
+- Prefer a **modifier on Record** (e.g. Shift+Record, or a small
+  “Insert at playhead” in Transport menu) over a second large Record
+  button — two red buttons fight the “dead simple” layout.
+- Status line while armed: `Inserting at 1:23…` so it is obvious this
+  is not a fresh take.
+- If there is an A–B selection: either disable insert or define one
+  rule only — e.g. **replace selection** with the new capture (still
+  one new take). Do not offer both insert and replace without a clear
+  single default.
+
+**Recommendation**
+
+Do **not** add this until the basic transport/record-stop paths stay
+boring and reliable. Prefer external editors (Audacity, etc.) for real
+surgery. If product pressure returns, implement only the splice→new-take
+path above; treat full edit as a **non-goal**.
+
+---
+
 ### Non-goals (unchanged)
 
 - DAW / multi-track / effects beyond normalize
+- **Full WAV editor** (clipboard, multi-undo, effects chain, multi-format)
 - Playlist / library
 - PipeWire patchbay / mixer UI
 - Competing with Audacity or pw-record CLI power users
