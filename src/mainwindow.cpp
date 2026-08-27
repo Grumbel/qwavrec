@@ -559,8 +559,11 @@ void MainWindow::clearDocument()
 {
     if (m_state == AppState::Recording)
         onRecord();
-    if (m_player)
+    if (m_player) {
         m_player->stop();
+        m_player->loadPcm(QByteArray(), QAudioFormat());
+        m_player->clearPlayRange();
+    }
     if (m_capture)
         m_capture->stop();
 
@@ -574,14 +577,17 @@ void MainWindow::clearDocument()
     m_duration = 0;
     m_seekSlider->setRange(0, 0);
     m_seekSlider->setValue(0);
-    m_timeLabel->setText(tr("00:00 / 00:00"));
+    m_timeLabel->setText(tr("00:00.000 / 00:00.000"));
     m_waveform->clear();
     m_liveRecordPeaks.clear();
     m_rawPeaks.clear();
     m_editUndo.clear();
     m_editRedo.clear();
+    // Keep m_clipPcm / m_clipFormat so Paste works across New / take switches
     updateWindowTitle();
     setAppState(AppState::Ready);
+    updateEditActions();
+    startMonitoring();
 }
 
 void MainWindow::markModified()
@@ -1136,15 +1142,16 @@ void MainWindow::updateEditActions()
 {
     const bool idle = (m_state == AppState::Ready || m_state == AppState::Paused
                        || m_state == AppState::Error);
-    const bool hasDoc = hasDocument() && m_player && !m_player->pcm().isEmpty();
+    const bool hasDoc = m_player && !m_player->pcm().isEmpty();
     const bool hasSel = m_waveform && m_waveform->hasSelection();
     const bool canEdit = idle && hasDoc;
     if (m_cutAction)
         m_cutAction->setEnabled(canEdit && hasSel);
     if (m_copyAction)
         m_copyAction->setEnabled(canEdit && hasSel);
+    // Paste works into an empty document (File→New) as well as into an existing take
     if (m_pasteAction)
-        m_pasteAction->setEnabled(canEdit && !m_clipPcm.isEmpty());
+        m_pasteAction->setEnabled(idle && !m_clipPcm.isEmpty());
     if (m_deleteSelAction)
         m_deleteSelAction->setEnabled(canEdit && hasSel);
     if (m_cropAction)
@@ -1217,6 +1224,17 @@ void MainWindow::onPaste()
 {
     if (!m_player || m_clipPcm.isEmpty())
         return;
+    if (m_state == AppState::Recording || m_state == AppState::Playing)
+        return;
+
+    // Empty document (e.g. File→New): paste creates the document from the clipboard
+    if (m_player->pcm().isEmpty()) {
+        pushEditUndo(tr("Paste"));
+        applyDocumentPcm(m_clipPcm, m_clipFormat);
+        statusBar()->showMessage(tr("Pasted into new document"), 2000);
+        return;
+    }
+
     const QAudioFormat fmt = m_player->format();
     if (fmt.sampleFormat() != m_clipFormat.sampleFormat()
         || fmt.sampleRate() != m_clipFormat.sampleRate()
@@ -1230,9 +1248,7 @@ void MainWindow::onPaste()
         return;
     QByteArray pcm = m_player->pcm();
     const int frames = pcm.size() / bpf;
-    int insertFrame = 0;
     if (m_waveform->hasSelection()) {
-        // Replace selection
         const int fa = qBound(0, int(m_waveform->selectionStart() * frames), frames);
         const int fb = qBound(0, int(m_waveform->selectionEnd() * frames), frames);
         pushEditUndo(tr("Paste (replace selection)"));
@@ -1243,7 +1259,7 @@ void MainWindow::onPaste()
         applyDocumentPcm(out, fmt);
     } else {
         const qint64 posMs = m_player->position();
-        insertFrame = int(fmt.framesForDuration(posMs * 1000));
+        int insertFrame = int(fmt.framesForDuration(posMs * 1000));
         insertFrame = qBound(0, insertFrame, frames);
         pushEditUndo(tr("Paste"));
         QByteArray out;
