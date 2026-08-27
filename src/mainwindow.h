@@ -15,6 +15,8 @@
 #include <QAudioBufferOutput>
 #include <QIODevice>
 #include <QTemporaryFile>
+#include <QAudioDecoder>
+#include <QVector>
 
 class QComboBox;
 class QLabel;
@@ -81,6 +83,9 @@ private:
     QString documentPathForPlayback() const;
     bool hasDocument() const;
     void markModified();
+    void loadWaveformFromDocument();
+    void onDecoderBufferReady();
+    void onDecoderFinished();
 
     // Actions
     QAction *m_newAction = nullptr;
@@ -103,6 +108,11 @@ private:
     LevelMeter *m_inputMeter = nullptr;
     LevelMeter *m_outputMeter = nullptr;
     WaveformWidget *m_waveform = nullptr;
+
+    // Waveform decoding
+    QAudioDecoder *m_decoder = nullptr;
+    QVector<float> m_decodePeaks;
+    qint64 m_decodeSampleCount = 0;
 
     // Media
     QMediaDevices m_devices;

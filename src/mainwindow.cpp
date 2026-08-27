@@ -35,6 +35,7 @@
 #include <QKeySequence>
 #include <QCloseEvent>
 #include <QTemporaryFile>
+#include <QAudioDecoder>
 #include <QtMath>
 
 MainWindow::MainWindow(QWidget *parent)
@@ -88,7 +89,6 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_recorder, &QMediaRecorder::durationChanged, this, [this](qint64 d) {
         if (m_state == AppState::Recording) {
             m_timeLabel->setText(formatTime(d));
-            m_waveform->setDurationMs(d);
             m_duration = d;
         }
     });
@@ -403,7 +403,7 @@ void MainWindow::onOpen()
     clearDocument();
     setDocumentPath(path, false);
     m_player->setSource(QUrl::fromLocalFile(path));
-    m_waveform->clear();
+    loadWaveformFromDocument();
     setAppState(AppState::Ready);
 }
 
@@ -539,7 +539,6 @@ void MainWindow::onPlay()
 
     if (m_player->source().toLocalFile() != path)
         m_player->setSource(QUrl::fromLocalFile(path));
-    m_waveform->clear();
     m_player->play();
 }
 
@@ -652,7 +651,6 @@ void MainWindow::onDurationChanged(qint64 duration)
 {
     m_duration = duration;
     m_seekSlider->setRange(0, static_cast<int>(duration));
-    m_waveform->setDurationMs(duration);
     updateTimeLabel();
 }
 
@@ -700,6 +698,7 @@ void MainWindow::onRecorderStateChanged(QMediaRecorder::RecorderState state)
             if (!m_tempPath.isEmpty()) {
                 m_player->setSource(QUrl::fromLocalFile(m_tempPath));
                 m_fileLabel->setText(tr("Untitled (unsaved)"));
+                loadWaveformFromDocument();
             }
             startInputMonitoring();
         }
@@ -786,7 +785,7 @@ void MainWindow::onAudioSourceReadyRead()
         }
         if (n > 0) {
             m_inputMeter->setLevel(qSqrt(sumSq / n) * 2.5);
-            m_waveform->addLevel(peak);
+            m_waveform->addLiveLevel(peak);
         }
     } else if (fmt.sampleFormat() == QAudioFormat::Float) {
         const auto *s = reinterpret_cast<const float *>(data.constData());
@@ -797,7 +796,7 @@ void MainWindow::onAudioSourceReadyRead()
         }
         if (n > 0) {
             m_inputMeter->setLevel(qSqrt(sumSq / n) * 2.5);
-            m_waveform->addLevel(peak);
+            m_waveform->addLiveLevel(peak);
         }
     }
 }
@@ -808,7 +807,7 @@ void MainWindow::onAudioBufferReceived(const QAudioBuffer &buffer)
         return;
     const qreal level = computeLevel(buffer);
     m_outputMeter->setLevel(level);
-    m_waveform->addLevel(level);
+    m_waveform->addLiveLevel(level);
 }
 
 qreal MainWindow::computeLevel(const QAudioBuffer &buffer) const
@@ -889,6 +888,108 @@ void MainWindow::updateWindowTitle()
     if (m_modified || m_isTemporary)
         name += QChar(u'*');
     setWindowTitle(tr("%1 — QWavRec").arg(name));
+}
+
+
+void MainWindow::loadWaveformFromDocument()
+{
+    if (m_decoder) {
+        m_decoder->stop();
+        m_decoder->deleteLater();
+        m_decoder = nullptr;
+    }
+    m_decodePeaks.clear();
+    m_decodeSampleCount = 0;
+
+    const QString path = documentPathForPlayback();
+    if (path.isEmpty() || !QFileInfo::exists(path)) {
+        m_waveform->clear();
+        return;
+    }
+
+    m_decoder = new QAudioDecoder(this);
+    m_decoder->setSource(QUrl::fromLocalFile(path));
+
+    // Request a common PCM format for easy peak extraction
+    QAudioFormat fmt;
+    fmt.setSampleFormat(QAudioFormat::Float);
+    fmt.setSampleRate(8000); // low rate is enough for overview peaks
+    fmt.setChannelCount(1);
+    m_decoder->setAudioFormat(fmt);
+
+    connect(m_decoder, &QAudioDecoder::bufferReady, this, &MainWindow::onDecoderBufferReady);
+    connect(m_decoder, &QAudioDecoder::finished, this, &MainWindow::onDecoderFinished);
+    connect(m_decoder, QOverload<QAudioDecoder::Error>::of(&QAudioDecoder::error),
+            this, [this](QAudioDecoder::Error) {
+                statusBar()->showMessage(tr("Waveform decode failed"), 3000);
+                if (m_decoder) {
+                    m_decoder->deleteLater();
+                    m_decoder = nullptr;
+                }
+            });
+
+    m_decoder->start();
+}
+
+void MainWindow::onDecoderBufferReady()
+{
+    if (!m_decoder)
+        return;
+    const QAudioBuffer buffer = m_decoder->read();
+    if (!buffer.isValid() || buffer.sampleCount() == 0)
+        return;
+
+    const float *samples = buffer.constData<float>();
+    const int n = buffer.sampleCount();
+
+    // Downsample: keep max abs per window so we end up with ~400 peaks
+    const int targetPeaks = 400;
+    // Accumulate into running windows; we'll finalize on finished
+    for (int i = 0; i < n; ++i) {
+        const float v = qAbs(samples[i]);
+        m_decodePeaks.append(v);
+        ++m_decodeSampleCount;
+    }
+}
+
+void MainWindow::onDecoderFinished()
+{
+    if (m_decodePeaks.isEmpty()) {
+        m_waveform->clear();
+    } else {
+        // Reduce to a manageable number of peaks
+        const int target = 400;
+        QVector<float> peaks;
+        if (m_decodePeaks.size() <= target) {
+            peaks = m_decodePeaks;
+        } else {
+            peaks.reserve(target);
+            const double step = double(m_decodePeaks.size()) / target;
+            for (int i = 0; i < target; ++i) {
+                const int start = int(i * step);
+                const int end = int((i + 1) * step);
+                float mx = 0.f;
+                for (int j = start; j < end && j < m_decodePeaks.size(); ++j)
+                    mx = qMax(mx, m_decodePeaks[j]);
+                peaks.append(mx);
+            }
+        }
+        // Normalize
+        float mx = 0.f;
+        for (float v : peaks)
+            mx = qMax(mx, v);
+        if (mx > 0.f) {
+            for (float &v : peaks)
+                v /= mx;
+        }
+        m_waveform->setPeaks(peaks);
+    }
+
+    m_decodePeaks.clear();
+    if (m_decoder) {
+        m_decoder->deleteLater();
+        m_decoder = nullptr;
+    }
 }
 
 QString MainWindow::formatTime(qint64 ms) const

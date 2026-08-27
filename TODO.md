@@ -13,7 +13,7 @@
 - [x] Seek slider and time display
 - [x] WAV recording
 - [x] Realtime input level meter + output meter
-- [x] Scrolling waveform display
+- [x] Static document waveform with playhead (live monitor only when empty)
 - [x] Application icon (old-school SVG)
 - [x] Avoid concurrent QAudioSource while recording (prevents truncated end)
 
@@ -21,7 +21,7 @@
 
 - [ ] True in-RAM sample buffer (instead of temp file) for the document
 - [ ] Append successive recordings into one document
-- [ ] Full static waveform of the loaded/saved file (QAudioDecoder peaks)
+- [x] Static document waveform (QAudioDecoder peaks) with playhead
 - [ ] Peak-hold / clip indicators on meters
 - [ ] Remember last devices, volumes and directories
 - [ ] More recording formats when the backend supports them
