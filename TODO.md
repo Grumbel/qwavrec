@@ -1,4 +1,4 @@
-# TODO
+# QWavRec TODO
 
 ## MVP (done / in progress)
 

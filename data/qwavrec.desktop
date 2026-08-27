@@ -3,12 +3,12 @@
 
 [Desktop Entry]
 Type=Application
-Name=Simple Audio
+Name=QWavRec
 GenericName=Audio Player/Recorder
 Comment=Simple PipeWire audio player and recorder
-Exec=simple-audio
-Icon=simple-audio
+Exec=qwavrec
+Icon=qwavrec
 Terminal=false
 Categories=AudioVideo;Audio;Player;Recorder;
-Keywords=audio;player;recorder;pipewire;microphone;speaker;
+Keywords=audio;player;recorder;pipewire;microphone;speaker;wav;
 StartupNotify=true

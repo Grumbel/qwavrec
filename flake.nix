@@ -1,5 +1,5 @@
 {
-  description = "Simple Audio - a small PipeWire audio player/recorder";
+  description = "QWavRec - a small PipeWire audio player/recorder";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -13,7 +13,7 @@
       in
       {
         packages.default = pkgs.stdenv.mkDerivation {
-          pname = "simple-audio";
+          pname = "qwavrec";
           version = "0.1.0";
 
           src = ./.;
@@ -35,7 +35,7 @@
 
           meta = with pkgs.lib; {
             description = "Simple PipeWire audio player and recorder";
-            homepage = "https://github.com/grumbel/simple-audio";
+            homepage = "https://github.com/grumbel/qwavrec";
             license = licenses.gpl3Plus;
             maintainers = [ ];
             platforms = platforms.linux;

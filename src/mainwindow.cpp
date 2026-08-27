@@ -22,7 +22,7 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(tr("Simple Audio"));
+    setWindowTitle(tr("QWavRec"));
     setMinimumWidth(420);
 
     auto *central = new QWidget(this);

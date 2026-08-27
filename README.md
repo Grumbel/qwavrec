@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
 SPDX-License-Identifier: GPL-3.0-or-later
 -->
 
-# Simple Audio
+# QWavRec
 
 A small, traditional Qt desktop application for playing and recording audio via PipeWire (through Qt Multimedia).
 
@@ -29,7 +29,7 @@ It is essentially a GUI for the common `pw-play` / `pw-record` use cases:
 
 ```bash
 nix build
-./result/bin/simple-audio
+./result/bin/qwavrec
 ```
 
 Or enter a development shell:
@@ -39,7 +39,7 @@ nix develop
 mkdir build && cd build
 cmake .. -GNinja
 ninja
-./simple-audio
+./qwavrec
 ```
 
 ### Without Nix
@@ -50,7 +50,7 @@ Requires Qt 6 (Core, Gui, Widgets, Multimedia) and CMake ≥ 3.16.
 mkdir build && cd build
 cmake ..
 cmake --build .
-./simple-audio
+./qwavrec
 ```
 
 ## License

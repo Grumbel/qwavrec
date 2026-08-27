@@ -8,9 +8,9 @@
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    QApplication::setApplicationName("Simple Audio");
+    QApplication::setApplicationName("QWavRec");
     QApplication::setApplicationVersion("0.1.0");
-    QApplication::setOrganizationName("Simple Audio");
+    QApplication::setOrganizationName("QWavRec");
 
     MainWindow window;
     window.show();
