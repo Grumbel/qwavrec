@@ -8,6 +8,7 @@
 #include <QStringList>
 
 class QListWidget;
+class QListWidgetItem;
 class QLabel;
 class QPushButton;
 
