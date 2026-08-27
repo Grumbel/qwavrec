@@ -16,6 +16,10 @@ qt_add_executable(qwavrec
     src/main.cpp
     src/mainwindow.cpp
     src/mainwindow.h
+    src/levelmeter.cpp
+    src/levelmeter.h
+    src/waveformwidget.cpp
+    src/waveformwidget.h
 )
 
 target_link_libraries(qwavrec PRIVATE
@@ -27,3 +31,5 @@ target_link_libraries(qwavrec PRIVATE
 
 install(TARGETS qwavrec DESTINATION bin)
 install(FILES data/qwavrec.desktop DESTINATION share/applications)
+install(FILES data/icons/qwavrec.svg
+        DESTINATION share/icons/hicolor/scalable/apps)
