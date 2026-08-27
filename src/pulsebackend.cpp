@@ -278,7 +278,6 @@ void PulseCapture::runLoop(QString sourceName)
 PulsePlayback::PulsePlayback(QObject *parent)
     : QObject(parent)
 {
-    qRegisterMetaType<PulsePlayback::State>("PulsePlayback::State");
 }
 // ctor cont
 

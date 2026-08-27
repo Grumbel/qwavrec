@@ -71,6 +71,7 @@ class PulsePlayback : public QObject
     Q_OBJECT
 public:
     enum State { Stopped, Playing, Paused };
+    Q_ENUM(State)
 
     explicit PulsePlayback(QObject *parent = nullptr);
     ~PulsePlayback() override;
@@ -123,4 +124,3 @@ private:
 
 #endif
 
-Q_DECLARE_METATYPE(PulsePlayback::State)

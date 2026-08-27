@@ -11,6 +11,7 @@
 #include <QPushButton>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QLocale>
 #include <QMessageBox>
 
 HistoryDialog::HistoryDialog(const QStringList &takes, int currentIndex,
@@ -32,8 +33,8 @@ HistoryDialog::HistoryDialog(const QStringList &takes, int currentIndex,
     for (int i = 0; i < takes.size(); ++i) {
         const QFileInfo fi(takes.at(i));
         const QString stamp = fi.birthTime().isValid()
-            ? fi.birthTime().toString(Qt::DefaultLocaleShortDate)
-            : fi.lastModified().toString(Qt::DefaultLocaleShortDate);
+            ? fi.birthTime().toString(QLocale::system().dateTimeFormat(QLocale::ShortFormat))
+            : fi.lastModified().toString(QLocale::system().dateTimeFormat(QLocale::ShortFormat));
         const qint64 kb = fi.size() / 1024;
         const QString text = tr("%1.  %2  —  %3 KB  —  %4")
             .arg(i + 1)
