@@ -14,6 +14,7 @@
 #include <QAudioSource>
 #include <QAudioBufferOutput>
 #include <QIODevice>
+#include <QTemporaryFile>
 
 class QComboBox;
 class QLabel;
@@ -29,16 +30,24 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
 private slots:
     void updateAudioDevices();
     void onInputDeviceChanged(int index);
     void onOutputDeviceChanged(int index);
+    void onInputVolumeChanged(int value);
+    void onOutputVolumeChanged(int value);
+
+    void onNew();
     void onOpen();
+    void onSave();
     void onSaveAs();
-    void onRecord();
-    void onPlay();
-    void onStop();
+    void onRecord();   // toggle
+    void onPlay();     // toggle
     void onAbout();
+
     void onPositionChanged(qint64 position);
     void onDurationChanged(qint64 duration);
     void onPlayerStateChanged(QMediaPlayer::PlaybackState state);
@@ -46,11 +55,13 @@ private slots:
     void onPlayerError(QMediaPlayer::Error error, const QString &errorString);
     void onRecorderError(QMediaRecorder::Error error, const QString &errorString);
     void onSeek(int value);
+
     void onAudioSourceReadyRead();
     void onAudioBufferReceived(const QAudioBuffer &buffer);
 
 private:
     enum class AppState { Ready, Playing, Paused, Recording, Error };
+
     void createActions();
     void createMenus();
     void createToolBar();
@@ -64,24 +75,36 @@ private:
     void stopInputMonitoring();
     qreal computeLevel(const QAudioBuffer &buffer) const;
 
+    bool maybeSave();
+    void clearDocument();
+    void setDocumentPath(const QString &path, bool isTemporary);
+    QString documentPathForPlayback() const;
+    bool hasDocument() const;
+    void markModified();
+
+    // Actions
+    QAction *m_newAction = nullptr;
     QAction *m_openAction = nullptr;
+    QAction *m_saveAction = nullptr;
     QAction *m_saveAsAction = nullptr;
     QAction *m_quitAction = nullptr;
     QAction *m_recordAction = nullptr;
     QAction *m_playAction = nullptr;
-    QAction *m_stopAction = nullptr;
     QAction *m_aboutAction = nullptr;
 
+    // UI
     QLabel *m_fileLabel = nullptr;
     QComboBox *m_inputCombo = nullptr;
     QComboBox *m_outputCombo = nullptr;
+    QSlider *m_inputVolumeSlider = nullptr;
+    QSlider *m_outputVolumeSlider = nullptr;
     QSlider *m_seekSlider = nullptr;
     QLabel *m_timeLabel = nullptr;
-    QLabel *m_statusLabel = nullptr;
     LevelMeter *m_inputMeter = nullptr;
     LevelMeter *m_outputMeter = nullptr;
     WaveformWidget *m_waveform = nullptr;
 
+    // Media
     QMediaDevices m_devices;
     QMediaPlayer *m_player = nullptr;
     QAudioOutput *m_audioOutput = nullptr;
@@ -92,10 +115,15 @@ private:
     QAudioSource *m_audioSource = nullptr;
     QIODevice *m_audioSourceDevice = nullptr;
 
+    // Document
+    QString m_savedPath;          // empty = never saved / Untitled
+    QString m_tempPath;           // current recording lives here until Save
+    bool m_isTemporary = true;
+    bool m_modified = false;
+
     AppState m_state = AppState::Ready;
     qint64 m_duration = 0;
     bool m_seeking = false;
-    QString m_currentFile;
 };
 
 #endif

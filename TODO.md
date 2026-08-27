@@ -2,36 +2,33 @@
 
 ## Done
 
-- [x] Qt Widgets main window
+- [x] Qt Widgets main window with menu + toolbar
 - [x] Input / Output device dropdowns with hot-plug
-- [x] File Open / Save Recording As (separate actions)
-- [x] Play / Record / Stop with proper icons (red record button)
-- [x] Big square-ish transport buttons at the bottom
-- [x] Menu bar and toolbar
+- [x] Document model: record into temporary file until explicit Save
+- [x] File → New / Open / Save / Save As
+- [x] Record and Play as toggles (no separate Stop)
+- [x] Icon-only large transport buttons (tooltips only)
+- [x] Status bar only (no duplicate status label)
+- [x] Playback volume + microphone level sliders
 - [x] Seek slider and time display
 - [x] WAV recording
-- [x] Basic error reporting
-- [x] Application icon (SVG, old-school colorful)
-- [x] Realtime input level meter (LED-style)
-- [x] Output level meter during playback
-- [x] Scrolling waveform / signal display (phosphor-style)
+- [x] Realtime input level meter + output meter
+- [x] Scrolling waveform display
+- [x] Application icon (old-school SVG)
+- [x] Avoid concurrent QAudioSource while recording (prevents truncated end)
 
 ## Feature requests / Nice to have
 
-- [ ] Pause button (in addition to Resume via Play)
-- [ ] Volume control slider
-- [ ] Full static waveform of the loaded file (decode peaks with QAudioDecoder)
-- [ ] Peak-hold and clip indicators on meters
-- [ ] Remember last used devices and directories
-- [ ] Default recording directory preference
-- [ ] More recording formats (FLAC, Opus, …) when the backend supports them
-- [ ] Auto-restart stream on device change instead of stopping
-- [ ] Keyboard shortcuts for transport (Space = play/pause, R = record, …)
-- [ ] Man page
-- [ ] Translations / i18n
-- [ ] Optional always-on-top or tray mode
-- [ ] Simple spectrum (FFT) view as alternative to waveform
-- [ ] Drag-and-drop of audio files onto the window
+- [ ] True in-RAM sample buffer (instead of temp file) for the document
+- [ ] Append successive recordings into one document
+- [ ] Full static waveform of the loaded/saved file (QAudioDecoder peaks)
+- [ ] Peak-hold / clip indicators on meters
+- [ ] Remember last devices, volumes and directories
+- [ ] More recording formats when the backend supports them
+- [ ] Auto-restart stream on device change
+- [ ] Keyboard shortcuts (Space = play/pause, R = record, …)
+- [ ] Drag-and-drop of audio files
+- [ ] Man page / translations
 
 ## Non-goals
 
@@ -41,4 +38,3 @@
 - Mixer / PipeWire patchbay
 - Multi-track recording
 - Metadata tagging UI
-- Podcast / chapter tools

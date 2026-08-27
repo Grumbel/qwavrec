@@ -7,46 +7,34 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 A small, traditional Qt desktop application for playing and recording audio via PipeWire (through Qt Multimedia).
 
-Essentially a GUI companion to `pw-play` / `pw-record`:
+## Workflow
 
-* Select audio input or output device
-* Record audio to a WAV file
-* Play an audio file
-* Switch devices without restarting the application
-* See realtime input activity and a simple waveform
-* Quickly verify that a microphone or speaker works
+* **Record** toggles recording into an unsaved temporary document.
+* **Play** toggles playback / pause of the current document.
+* **File → Save / Save As** writes the recording to disk.
+* **File → New** discards the current document (with confirmation if modified).
+* **Open** loads an existing file as the current document.
+* Switch input/output devices on the fly; adjust mic level and playback volume.
+
+No separate Stop button — the Record and Play buttons act as toggles.
 
 ## Features
 
-* Input / Output device selectors with hot-plug support
-* Separate **Open** (playback) and **Save Recording As** actions
-* Record / Play / Stop with proper icons (red record button)
-* Large transport buttons, menu bar and toolbar
-* Seek slider and time display
-* Realtime input level meter (LED segments)
-* Output level meter and scrolling waveform during playback/monitoring
-* Old-school colorful SVG application icon
+* Device selectors with hot-plug support
+* LED-style level meters and a simple scrolling waveform
+* Old-school colorful SVG icon
+* Menu bar + toolbar
 
 ## Building
 
-### With Nix
+### Nix
 
 ```bash
 nix build
 ./result/bin/qwavrec
 ```
 
-Or a development shell:
-
-```bash
-nix develop
-mkdir build && cd build
-cmake .. -GNinja
-ninja
-./qwavrec
-```
-
-### Without Nix
+### Manual
 
 Requires Qt 6 (Core, Gui, Widgets, Multimedia) and CMake ≥ 3.16.
 
