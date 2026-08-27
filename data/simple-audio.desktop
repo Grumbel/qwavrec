@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[Desktop Entry]
+Type=Application
+Name=Simple Audio
+GenericName=Audio Player/Recorder
+Comment=Simple PipeWire audio player and recorder
+Exec=simple-audio
+Icon=simple-audio
+Terminal=false
+Categories=AudioVideo;Audio;Player;Recorder;
+Keywords=audio;player;recorder;pipewire;microphone;speaker;
+StartupNotify=true
