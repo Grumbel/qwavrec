@@ -1026,7 +1026,10 @@ void MainWindow::onAbout()
            "<p>Simple WAV recorder/player using <b>PulseAudio</b> "
            "(sources including monitors, and sinks).</p>"
            "<p>Takes are archived under <code>~/.cache/qwavrec</code>.</p>"
-           "<p>Version %1 · GPL-3.0-or-later</p>")
+           "<p>Version %1 · GPL-3.0-or-later</p>"
+           "<p>Project home:<br>"
+           "<a href="https://github.com/Grumbel/qwavrec">"
+           "https://github.com/Grumbel/qwavrec</a></p>")
             .arg(QApplication::applicationVersion()));
 }
 

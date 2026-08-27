@@ -5,6 +5,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 # QWavRec
 
+**Project home:** <https://github.com/Grumbel/qwavrec>
+
 A small, traditional Qt desktop application for playing and recording audio via PipeWire (through Qt Multimedia).
 
 ## Workflow
