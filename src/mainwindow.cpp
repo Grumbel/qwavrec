@@ -67,8 +67,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_player, &PulsePlayback::errorOccurred, this, &MainWindow::onPlayerError);
 
     m_capture = new PulseCapture(this);
-    connect(m_capture, &PulseCapture::samplesReady, this, &MainWindow::onCaptureSamples);
     connect(m_capture, &PulseCapture::errorOccurred, this, &MainWindow::onCaptureError);
+
+    m_meterTimer = new QTimer(this);
+    m_meterTimer->setInterval(50); // 20 Hz — smooth meter, no event flood
+    connect(m_meterTimer, &QTimer::timeout, this, &MainWindow::onMeterTick);
+    m_meterTimer->start();
 
     connect(m_inputCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onInputDeviceChanged);
@@ -579,10 +583,12 @@ void MainWindow::onSaveAs()
 void MainWindow::onRecord()
 {
     if (m_state == AppState::Recording) {
-        // Stop the worker but keep accepting its last queued buffers.
-        m_capture->stop();
-        // Drain in-flight samplesReady events into the still-open writer.
-        for (int i = 0; i < 25; ++i) {
+        m_capture->setRecording(false);
+        // Drain remaining PCM from the capture queue
+        for (int i = 0; i < 15; ++i) {
+            const QByteArray rest = m_capture->takeRecordedAudio();
+            if (!rest.isEmpty() && m_wavWriter.isOpen())
+                m_wavWriter.write(rest.constData(), rest.size());
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
             QThread::msleep(10);
         }
@@ -615,7 +621,8 @@ void MainWindow::onRecord()
                     tr("Take saved to cache (%1)").arg(m_history.takes().size()), 4000);
             }
         }
-        startMonitoring();
+        // Capture still running for the input meter
+        m_monitoring = m_capture->isRunning();
         setAppState(AppState::Ready);
         return;
     }
@@ -638,7 +645,19 @@ void MainWindow::onRecord()
     m_isTemporary = true;
     m_savedPath.clear();
 
-    stopMonitoring();
+    // Keep the same capture stream — just enable PCM queue
+    if (!m_monitoring || !m_capture->isRunning()) {
+        stopMonitoring();
+        m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
+        if (!m_capture->start(currentSourceName(), 48000, 1)) {
+            QMessageBox::critical(this, tr("Error"), tr("Could not open PulseAudio source for recording."));
+            m_recordAction->setChecked(false);
+            return;
+        }
+        m_monitoring = true;
+    }
+    m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
+
     QAudioFormat fmt;
     fmt.setSampleFormat(QAudioFormat::Int16);
     fmt.setSampleRate(48000);
@@ -646,7 +665,6 @@ void MainWindow::onRecord()
     if (!m_wavWriter.open(m_tempPath, fmt)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not open WAV file for writing."));
         m_recordAction->setChecked(false);
-        startMonitoring();
         return;
     }
 
@@ -656,15 +674,7 @@ void MainWindow::onRecord()
     markModified();
     setAppState(AppState::Recording);
     m_recordAction->setChecked(true);
-    m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
-    if (!m_capture->start(currentSourceName(), 48000, 1)) {
-        QMessageBox::critical(this, tr("Error"), tr("Could not open PulseAudio source for recording."));
-        m_wavWriter.close();
-        m_recordAction->setChecked(false);
-        setAppState(AppState::Ready);
-        startMonitoring();
-        return;
-    }
+    m_capture->setRecording(true);
     if (m_history.takes().size() > 0)
         statusBar()->showMessage(
             tr("Recording… (previous takes remain in cache, %1 total)")
@@ -930,12 +940,14 @@ void MainWindow::refreshDevices()
     if (curOut.isEmpty() && m_outputCombo->currentIndex() >= 0)
         curOut = m_outputCombo->currentData().toString();
 
+    // Single PulseAudio connection for sources + sinks + defaults
+    const PulseDevices::Lists lists = PulseDevices::query();
+
     m_inputCombo->blockSignals(true);
     m_outputCombo->blockSignals(true);
     m_inputCombo->clear();
     int selIn = 0, i = 0;
-    const auto sources = PulseDevices::sources();
-    for (const PulseDevice &dev : sources) {
+    for (const PulseDevice &dev : lists.sources) {
         QString label = dev.description;
         if (dev.isMonitor)
             label += tr(" [monitor]");
@@ -952,8 +964,7 @@ void MainWindow::refreshDevices()
     m_outputCombo->clear();
     int selOut = 0;
     i = 0;
-    const auto sinks = PulseDevices::sinks();
-    for (const PulseDevice &dev : sinks) {
+    for (const PulseDevice &dev : lists.sinks) {
         QString label = dev.description;
         if (dev.isDefault)
             label += tr(" (default)");
@@ -1042,10 +1053,16 @@ void MainWindow::startMonitoring()
 {
     if (m_state == AppState::Recording)
         return;
-    stopMonitoring();
     if (!m_capture)
         return;
+    // Avoid thrashing: if already running on the same device, keep it
+    if (m_monitoring && m_capture->isRunning()) {
+        m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
+        return;
+    }
+    stopMonitoring();
     m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
+    m_capture->setRecording(false);
     if (!m_capture->start(currentSourceName(), 48000, 1)) {
         statusBar()->showMessage(tr("Could not open capture device"), 3000);
         return;
@@ -1055,31 +1072,13 @@ void MainWindow::startMonitoring()
 
 void MainWindow::stopMonitoring()
 {
-    if (m_capture)
+    if (m_capture) {
+        m_capture->setRecording(false);
         m_capture->stop();
+    }
     m_monitoring = false;
     if (m_inputMeter)
         m_inputMeter->setLevel(0.0);
-}
-
-void MainWindow::onCaptureSamples(const QByteArray &pcm, float peak)
-{
-    m_inputMeter->setLevel(qreal(peak));
-    if (m_state == AppState::Recording && m_wavWriter.isOpen()) {
-        m_wavWriter.write(pcm.constData(), pcm.size());
-        m_liveRecordPeaks.append(peak);
-        if (m_liveRecordPeaks.size() > 800) {
-            QVector<float> reduced;
-            reduced.reserve(400);
-            for (int i = 0; i < 400; ++i)
-                reduced.append(qMax(m_liveRecordPeaks[i * 2], m_liveRecordPeaks[i * 2 + 1]));
-            m_liveRecordPeaks = reduced;
-        }
-        m_rawPeaks = m_liveRecordPeaks;
-        m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
-        m_timeLabel->setText(formatTime(m_recordTimer.elapsed()));
-        m_duration = m_recordTimer.elapsed();
-    }
 }
 
 void MainWindow::onCaptureError(const QString &msg)
@@ -1087,6 +1086,50 @@ void MainWindow::onCaptureError(const QString &msg)
     QMessageBox::critical(this, tr("Capture Error"), msg);
     if (m_state == AppState::Recording)
         onRecord();
+}
+
+void MainWindow::onMeterTick()
+{
+    if (!m_capture)
+        return;
+
+    // Input meter from lock-free peak (no per-buffer GUI events)
+    if (m_monitoring || m_state == AppState::Recording)
+        m_inputMeter->setLevel(m_capture->currentPeak());
+    else
+        m_inputMeter->setLevel(0.0);
+
+    // Drain PCM while recording
+    if (m_state == AppState::Recording && m_wavWriter.isOpen()) {
+        const QByteArray pcm = m_capture->takeRecordedAudio();
+        if (!pcm.isEmpty()) {
+            m_wavWriter.write(pcm.constData(), pcm.size());
+            // Peak for live waveform (downsample: one sample per tick)
+            float peak = 0.f;
+            const auto *s = reinterpret_cast<const qint16 *>(pcm.constData());
+            const int n = pcm.size() / 2;
+            for (int i = 0; i < n; i += 8) // stride — cheap
+                peak = qMax(peak, qAbs(s[i] / 32768.f));
+            m_liveRecordPeaks.append(peak);
+            if (m_liveRecordPeaks.size() > 800) {
+                QVector<float> reduced;
+                reduced.reserve(400);
+                for (int i = 0; i + 1 < m_liveRecordPeaks.size(); i += 2)
+                    reduced.append(qMax(m_liveRecordPeaks[i], m_liveRecordPeaks[i + 1]));
+                m_liveRecordPeaks = reduced;
+            }
+            m_rawPeaks = m_liveRecordPeaks;
+            m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+        }
+        m_timeLabel->setText(formatTime(m_recordTimer.elapsed()));
+        m_duration = m_recordTimer.elapsed();
+    }
+
+    // Output meter while playing
+    if (m_state == AppState::Playing && m_player && m_duration > 0) {
+        const qreal vol = m_outputVolumeSlider->value() / 100.0;
+        m_outputMeter->setLevel(m_player->levelAtPosition(m_player->position()) * vol);
+    }
 }
 
 void MainWindow::onWaveformSeek(qreal pos)

@@ -6,34 +6,48 @@
 
 #include <QObject>
 #include <QString>
-#include <QStringList>
 #include <QByteArray>
 #include <QAudioFormat>
-#include <QThread>
 #include <QMutex>
 #include <QVector>
 #include <atomic>
 
 struct PulseDevice {
-    QString name;        // PulseAudio name (stable id)
-    QString description; // human-readable
+    QString name;
+    QString description;
     bool isMonitor = false;
     bool isDefault = false;
 };
 
-/** Enumerate sources (including monitors) and sinks via libpulse. */
+/**
+ * Enumerate sources (including monitors) and sinks.
+ * Uses a single PulseAudio connection; safe to call from the GUI thread
+ * but prefer not to call it in a tight loop.
+ */
 class PulseDevices
 {
 public:
-    static QVector<PulseDevice> sources();
-    static QVector<PulseDevice> sinks();
-    static QString defaultSourceName();
-    static QString defaultSinkName();
+    struct Lists {
+        QVector<PulseDevice> sources;
+        QVector<PulseDevice> sinks;
+        QString defaultSource;
+        QString defaultSink;
+        bool ok = false;
+    };
+
+    /** One connection: server info + source list + sink list. */
+    static Lists query();
+
+    static QVector<PulseDevice> sources() { return query().sources; }
+    static QVector<PulseDevice> sinks() { return query().sinks; }
 };
 
 /**
- * Capture thread using pa_simple (RECORD).
- * Emits PCM Int16 interleaved chunks; sample rate / channels fixed at open.
+ * Capture via pa_simple on a worker thread.
+ *
+ * - Meter peaks are stored lock-free for a GUI timer (no event flood).
+ * - PCM for recording is queued; drain with takeRecordedAudio().
+ * - stop() is non-blocking (worker exits after the current read).
  */
 class PulseCapture : public QObject
 {
@@ -46,11 +60,19 @@ public:
     void stop();
     bool isRunning() const { return m_running.load(); }
     QAudioFormat format() const { return m_format; }
-    void setGain(qreal gain) { m_gain = gain; } // 0..3
+    void setGain(qreal gain) { m_gain.store(gain); }
+
+    /** Latest peak 0..1 for the input meter (lock-free). */
+    qreal currentPeak() const { return m_peak.load(); }
+
+    /** Drain PCM accumulated since last call (for recording). */
+    QByteArray takeRecordedAudio();
+
+    void setRecording(bool on);
 
 signals:
-    void samplesReady(const QByteArray &pcm, float peak);
     void errorOccurred(const QString &message);
+    void started();
     void stopped();
 
 private:
@@ -58,14 +80,18 @@ private:
 
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stop{false};
-    QThread m_thread;
-    QAudioFormat m_format;
-    qreal m_gain = 1.0;
+    std::atomic<bool> m_recording{false};
     std::atomic<int> m_session{0};
+    std::atomic<qreal> m_gain{1.0};
+    std::atomic<qreal> m_peak{0.0};
+
+    QAudioFormat m_format;
+    QMutex m_pcmMutex;
+    QByteArray m_pcmQueue;
 };
 
 /**
- * Playback of in-memory Int16 (or Float) PCM via pa_simple.
+ * Playback of in-memory PCM via pa_simple on a worker thread.
  */
 class PulsePlayback : public QObject
 {
@@ -82,10 +108,9 @@ public:
     void pause();
     void stop();
     void setPosition(qint64 ms);
-    void setVolume(qreal volume); // 0..1 — software scale
+    void setVolume(qreal volume);
     void setSinkName(const QString &name);
     void setLoop(bool loop) { m_loop = loop; }
-    /** Limit playback to [startMs, endMs]; use endMs<=startMs for full file. */
     void setPlayRange(qint64 startMs, qint64 endMs);
     void clearPlayRange();
 
@@ -101,7 +126,7 @@ signals:
     void errorOccurred(const QString &message);
 
 private:
-    void runLoop();
+    void runLoop(int generation);
     void setState(State s);
     qint64 msToBytes(qint64 ms) const;
     qint64 bytesToMs(qint64 bytes) const;
@@ -115,13 +140,12 @@ private:
     qreal m_volume = 0.8;
     bool m_loop = false;
     qint64 m_rangeStartMs = 0;
-    qint64 m_rangeEndMs = -1; // -1 = full duration
+    qint64 m_rangeEndMs = -1;
 
     std::atomic<bool> m_stop{false};
     std::atomic<bool> m_pause{false};
-    QThread m_thread;
+    std::atomic<int> m_generation{0};
     mutable QMutex m_mutex;
 };
 
 #endif
-

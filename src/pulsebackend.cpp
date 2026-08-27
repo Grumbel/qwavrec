@@ -10,15 +10,17 @@
 #include <QMetaObject>
 #include <QCoreApplication>
 #include <QEventLoop>
+#include <QThread>
 #include <QtMath>
 #include <cstring>
 
+// ─── Device enumeration (single connection) ───────────────────────────
+
 namespace {
 
-struct ListCtx {
-    QVector<PulseDevice> devices;
-    QString defaultName;
-    bool done = false;
+struct EnumCtx {
+    PulseDevices::Lists *lists = nullptr;
+    int phase = 0; // 0=server, 1=sources, 2=sinks
 };
 
 void contextStateCb(pa_context *c, void *userdata)
@@ -31,11 +33,23 @@ void contextStateCb(pa_context *c, void *userdata)
         *ready = -1;
 }
 
+void serverInfoCb(pa_context *, const pa_server_info *i, void *userdata)
+{
+    auto *ctx = static_cast<EnumCtx *>(userdata);
+    if (i) {
+        if (i->default_source_name)
+            ctx->lists->defaultSource = QString::fromUtf8(i->default_source_name);
+        if (i->default_sink_name)
+            ctx->lists->defaultSink = QString::fromUtf8(i->default_sink_name);
+    }
+    ctx->phase = 1;
+}
+
 void sourceInfoCb(pa_context *, const pa_source_info *i, int eol, void *userdata)
 {
-    auto *ctx = static_cast<ListCtx *>(userdata);
+    auto *ctx = static_cast<EnumCtx *>(userdata);
     if (eol) {
-        ctx->done = true;
+        ctx->phase = 2;
         return;
     }
     if (!i)
@@ -44,17 +58,17 @@ void sourceInfoCb(pa_context *, const pa_source_info *i, int eol, void *userdata
     d.name = QString::fromUtf8(i->name);
     d.description = QString::fromUtf8(i->description);
     d.isMonitor = (i->monitor_of_sink != PA_INVALID_INDEX);
-    d.isDefault = (d.name == ctx->defaultName);
+    d.isDefault = (d.name == ctx->lists->defaultSource);
     if (d.isMonitor && !d.description.contains(QLatin1String("Monitor"), Qt::CaseInsensitive))
         d.description = QStringLiteral("Monitor of %1").arg(d.description);
-    ctx->devices.append(d);
+    ctx->lists->sources.append(d);
 }
 
 void sinkInfoCb(pa_context *, const pa_sink_info *i, int eol, void *userdata)
 {
-    auto *ctx = static_cast<ListCtx *>(userdata);
+    auto *ctx = static_cast<EnumCtx *>(userdata);
     if (eol) {
-        ctx->done = true;
+        ctx->phase = 3;
         return;
     }
     if (!i)
@@ -62,30 +76,36 @@ void sinkInfoCb(pa_context *, const pa_sink_info *i, int eol, void *userdata)
     PulseDevice d;
     d.name = QString::fromUtf8(i->name);
     d.description = QString::fromUtf8(i->description);
-    d.isDefault = (d.name == ctx->defaultName);
-    ctx->devices.append(d);
+    d.isDefault = (d.name == ctx->lists->defaultSink);
+    ctx->lists->sinks.append(d);
 }
 
-template<typename Fn>
-bool withContext(Fn fn)
+} // namespace
+
+PulseDevices::Lists PulseDevices::query()
 {
+    Lists lists;
     pa_mainloop *ml = pa_mainloop_new();
     if (!ml)
-        return false;
+        return lists;
     pa_mainloop_api *api = pa_mainloop_get_api(ml);
-    pa_context *ctx = pa_context_new(api, "qwavrec");
+    pa_context *ctx = pa_context_new(api, "qwavrec-enum");
     if (!ctx) {
         pa_mainloop_free(ml);
-        return false;
+        return lists;
     }
+
     int ready = 0;
     pa_context_set_state_callback(ctx, contextStateCb, &ready);
     if (pa_context_connect(ctx, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
         pa_context_unref(ctx);
         pa_mainloop_free(ml);
-        return false;
+        return lists;
     }
-    while (ready == 0) {
+
+    // Cap wait so a hung server cannot freeze the app forever
+    int spins = 0;
+    while (ready == 0 && spins++ < 200) {
         if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
             break;
     }
@@ -93,91 +113,41 @@ bool withContext(Fn fn)
         pa_context_disconnect(ctx);
         pa_context_unref(ctx);
         pa_mainloop_free(ml);
-        return false;
+        return lists;
     }
-    fn(ctx, ml);
+
+    EnumCtx ectx;
+    ectx.lists = &lists;
+
+    pa_operation *op = pa_context_get_server_info(ctx, serverInfoCb, &ectx);
+    if (op) {
+        while (ectx.phase < 1 && spins++ < 400)
+            pa_mainloop_iterate(ml, 1, nullptr);
+        pa_operation_unref(op);
+    }
+
+    op = pa_context_get_source_info_list(ctx, sourceInfoCb, &ectx);
+    if (op) {
+        while (ectx.phase < 2 && spins++ < 800)
+            pa_mainloop_iterate(ml, 1, nullptr);
+        pa_operation_unref(op);
+    }
+
+    op = pa_context_get_sink_info_list(ctx, sinkInfoCb, &ectx);
+    if (op) {
+        while (ectx.phase < 3 && spins++ < 1200)
+            pa_mainloop_iterate(ml, 1, nullptr);
+        pa_operation_unref(op);
+    }
+
+    lists.ok = true;
     pa_context_disconnect(ctx);
     pa_context_unref(ctx);
     pa_mainloop_free(ml);
-    return true;
+    return lists;
 }
 
-QString getDefaultSource()
-{
-    QString name;
-    withContext([&](pa_context *c, pa_mainloop *ml) {
-        struct St { QString *out; bool done; } st{&name, false};
-        pa_operation *op = pa_context_get_server_info(c,
-            [](pa_context *, const pa_server_info *i, void *userdata) {
-                auto *s = static_cast<St *>(userdata);
-                if (i && i->default_source_name)
-                    *s->out = QString::fromUtf8(i->default_source_name);
-                s->done = true;
-            }, &st);
-        if (!op) return;
-        while (!st.done)
-            pa_mainloop_iterate(ml, 1, nullptr);
-        pa_operation_unref(op);
-    });
-    return name;
-}
-
-QString getDefaultSink()
-{
-    QString name;
-    withContext([&](pa_context *c, pa_mainloop *ml) {
-        struct St { QString *out; bool done; } st{&name, false};
-        pa_operation *op = pa_context_get_server_info(c,
-            [](pa_context *, const pa_server_info *i, void *userdata) {
-                auto *s = static_cast<St *>(userdata);
-                if (i && i->default_sink_name)
-                    *s->out = QString::fromUtf8(i->default_sink_name);
-                s->done = true;
-            }, &st);
-        if (!op) return;
-        while (!st.done)
-            pa_mainloop_iterate(ml, 1, nullptr);
-        pa_operation_unref(op);
-    });
-    return name;
-}
-
-} // namespace
-
-QVector<PulseDevice> PulseDevices::sources()
-{
-    ListCtx list;
-    list.defaultName = getDefaultSource();
-    withContext([&](pa_context *c, pa_mainloop *ml) {
-        list.done = false;
-        pa_operation *op = pa_context_get_source_info_list(c, sourceInfoCb, &list);
-        if (!op) return;
-        while (!list.done)
-            pa_mainloop_iterate(ml, 1, nullptr);
-        pa_operation_unref(op);
-    });
-    return list.devices;
-}
-
-QVector<PulseDevice> PulseDevices::sinks()
-{
-    ListCtx list;
-    list.defaultName = getDefaultSink();
-    withContext([&](pa_context *c, pa_mainloop *ml) {
-        list.done = false;
-        pa_operation *op = pa_context_get_sink_info_list(c, sinkInfoCb, &list);
-        if (!op) return;
-        while (!list.done)
-            pa_mainloop_iterate(ml, 1, nullptr);
-        pa_operation_unref(op);
-    });
-    return list.devices;
-}
-
-QString PulseDevices::defaultSourceName() { return getDefaultSource(); }
-QString PulseDevices::defaultSinkName() { return getDefaultSink(); }
-
-// ---- Capture ----
+// ─── Capture ──────────────────────────────────────────────────────────
 
 PulseCapture::PulseCapture(QObject *parent)
     : QObject(parent)
@@ -192,33 +162,54 @@ PulseCapture::~PulseCapture()
 bool PulseCapture::start(const QString &sourceName, int sampleRate, int channels)
 {
     stop();
+
     m_format = QAudioFormat();
     m_format.setSampleRate(sampleRate);
     m_format.setChannelCount(channels);
     m_format.setSampleFormat(QAudioFormat::Int16);
+
+    {
+        QMutexLocker lock(&m_pcmMutex);
+        m_pcmQueue.clear();
+    }
+    m_peak.store(0.0);
     m_stop = false;
     m_running = true;
-    const int session = m_session.fetch_add(1) + 1; // invalidate prior workers
+    const int session = m_session.fetch_add(1) + 1;
 
     const QString name = sourceName;
     auto *thr = QThread::create([this, name, session]() { runLoop(name, session); });
-    connect(thr, &QThread::finished, thr, &QObject::deleteLater);
-    // Track via m_thread is awkward with QThread::create; store pointer
     thr->setObjectName(QStringLiteral("PulseCapture"));
+    thr->setParent(this);
+    connect(thr, &QThread::finished, thr, &QObject::deleteLater);
     thr->start();
-    // Keep reference for wait on stop: use QPointer pattern via property
-    thr->setParent(this); // will be deleteLater on finish — parented so stop can find?
     return true;
 }
 
 void PulseCapture::stop()
 {
-    // pa_simple_read() blocks until the next fragment; waiting here freezes
-    // the GUI. Just signal the worker — it exits after the current read.
-    // Do NOT bump m_session here: that would drop in-flight samples still
-    // queued for the current recording.
     m_stop = true;
     m_running = false;
+    m_recording.store(false);
+    // Session bump so late emits are ignored; worker leaves after current read.
+    m_session.fetch_add(1);
+    m_peak.store(0.0);
+}
+
+void PulseCapture::setRecording(bool on)
+{
+    m_recording.store(on);
+    if (!on) {
+        // keep queue for drain
+    }
+}
+
+QByteArray PulseCapture::takeRecordedAudio()
+{
+    QMutexLocker lock(&m_pcmMutex);
+    QByteArray out;
+    out.swap(m_pcmQueue);
+    return out;
 }
 
 void PulseCapture::runLoop(QString sourceName, int session)
@@ -228,12 +219,20 @@ void PulseCapture::runLoop(QString sourceName, int session)
     ss.rate = static_cast<uint32_t>(m_format.sampleRate());
     ss.channels = static_cast<uint8_t>(m_format.channelCount());
 
+    // Small fragments → responsive reads (~20 ms) and quicker stop
+    pa_buffer_attr attr;
+    memset(&attr, 0xff, sizeof(attr)); // -1u = default
+    const uint32_t bytesPer20ms =
+        uint32_t(ss.rate / 50) * uint32_t(ss.channels) * 2u;
+    attr.fragsize = bytesPer20ms;
+    attr.maxlength = bytesPer20ms * 4;
+
     int error = 0;
     QByteArray devBytes = sourceName.toUtf8();
     const char *dev = sourceName.isEmpty() ? nullptr : devBytes.constData();
 
     pa_simple *s = pa_simple_new(nullptr, "qwavrec", PA_STREAM_RECORD,
-                                 dev, "capture", &ss, nullptr, nullptr, &error);
+                                 dev, "capture", &ss, nullptr, &attr, &error);
     if (!s) {
         const QString msg = QString::fromUtf8(pa_strerror(error));
         QMetaObject::invokeMethod(this, [this, msg]() {
@@ -244,6 +243,8 @@ void PulseCapture::runLoop(QString sourceName, int session)
         return;
     }
 
+    QMetaObject::invokeMethod(this, [this]() { emit started(); }, Qt::QueuedConnection);
+
     const int frameBytes = int(ss.channels) * 2;
     const int chunkFrames = int(ss.rate) / 50;
     QByteArray buf(chunkFrames * frameBytes, Qt::Uninitialized);
@@ -251,33 +252,38 @@ void PulseCapture::runLoop(QString sourceName, int session)
     while (!m_stop.load() && m_session.load() == session) {
         if (pa_simple_read(s, buf.data(), size_t(buf.size()), &error) < 0)
             break;
+        if (m_session.load() != session)
+            break;
 
         auto *samples = reinterpret_cast<qint16 *>(buf.data());
         const int n = buf.size() / 2;
         float peak = 0.f;
-        const float g = float(m_gain);
+        const float g = float(m_gain.load());
         for (int i = 0; i < n; ++i) {
             float v = samples[i] / 32768.f * g;
             v = qBound(-1.f, v, 1.f);
             peak = qMax(peak, qAbs(v));
             samples[i] = qint16(v * 32767.f);
         }
+        m_peak.store(qreal(peak));
 
-        if (m_session.load() != session)
-            break;
-        const QByteArray copy = buf;
-        QMetaObject::invokeMethod(this, [this, copy, peak, session]() {
-            if (m_session.load() == session)
-                emit samplesReady(copy, peak);
-        }, Qt::QueuedConnection);
+        if (m_recording.load()) {
+            QMutexLocker lock(&m_pcmMutex);
+            m_pcmQueue.append(buf);
+            // Bound memory if GUI stalls
+            const int maxBytes = m_format.sampleRate() * m_format.bytesPerFrame() * 30;
+            if (m_pcmQueue.size() > maxBytes)
+                m_pcmQueue.remove(0, m_pcmQueue.size() - maxBytes);
+        }
     }
 
     pa_simple_free(s);
     m_running = false;
+    m_peak.store(0.0);
     QMetaObject::invokeMethod(this, [this]() { emit stopped(); }, Qt::QueuedConnection);
 }
 
-// ---- Playback ----
+// ─── Playback ─────────────────────────────────────────────────────────
 
 PulsePlayback::PulsePlayback(QObject *parent)
     : QObject(parent)
@@ -287,11 +293,6 @@ PulsePlayback::PulsePlayback(QObject *parent)
 PulsePlayback::~PulsePlayback()
 {
     stop();
-    const auto threads = findChildren<QThread *>();
-    for (QThread *t : threads) {
-        if (t->objectName() == QLatin1String("PulsePlayback"))
-            t->wait(3000);
-    }
 }
 
 bool PulsePlayback::loadPcm(const QByteArray &pcm, const QAudioFormat &format)
@@ -390,8 +391,9 @@ void PulsePlayback::play()
         }
     }
     setState(Playing);
+    const int gen = m_generation.fetch_add(1) + 1;
 
-    auto *thr = QThread::create([this]() { runLoop(); });
+    auto *thr = QThread::create([this, gen]() { runLoop(gen); });
     thr->setObjectName(QStringLiteral("PulsePlayback"));
     thr->setParent(this);
     connect(thr, &QThread::finished, thr, &QObject::deleteLater);
@@ -410,14 +412,14 @@ void PulsePlayback::stop()
 {
     m_stop = true;
     m_pause = false;
+    m_generation.fetch_add(1);
+
     const auto threads = findChildren<QThread *>();
     for (QThread *t : threads) {
         if (t->objectName() != QLatin1String("PulsePlayback"))
             continue;
-        // Process events while waiting so queued signals from the worker
-        // cannot deadlock against the GUI thread.
         int spins = 0;
-        while (!t->wait(50) && spins++ < 60)
+        while (!t->wait(20) && spins++ < 50)
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     }
     {
@@ -430,7 +432,7 @@ void PulsePlayback::stop()
     }
 }
 
-void PulsePlayback::runLoop()
+void PulsePlayback::runLoop(int generation)
 {
     pa_sample_spec ss;
     ss.format = (m_format.sampleFormat() == QAudioFormat::Float)
@@ -439,12 +441,20 @@ void PulsePlayback::runLoop()
     ss.rate = static_cast<uint32_t>(m_format.sampleRate());
     ss.channels = static_cast<uint8_t>(m_format.channelCount());
 
+    pa_buffer_attr attr;
+    memset(&attr, 0xff, sizeof(attr));
+    const uint32_t bytesPer20ms =
+        uint32_t(ss.rate / 50) * uint32_t(ss.channels)
+        * (ss.format == PA_SAMPLE_FLOAT32LE ? 4u : 2u);
+    attr.tlength = bytesPer20ms * 2;
+    attr.maxlength = bytesPer20ms * 8;
+
     int error = 0;
     QByteArray sinkBytes = m_sinkName.toUtf8();
     const char *dev = m_sinkName.isEmpty() ? nullptr : sinkBytes.constData();
 
     pa_simple *s = pa_simple_new(nullptr, "qwavrec", PA_STREAM_PLAYBACK,
-                                 dev, "playback", &ss, nullptr, nullptr, &error);
+                                 dev, "playback", &ss, nullptr, &attr, &error);
     if (!s) {
         const QString msg = QString::fromUtf8(pa_strerror(error));
         QMetaObject::invokeMethod(this, [this, msg]() {
@@ -456,11 +466,12 @@ void PulsePlayback::runLoop()
 
     const int bpf = qMax(1, m_format.bytesPerFrame());
     const int chunkBytes = (int(ss.rate) / 50) * bpf;
+    qint64 lastPosEmit = -1;
 
-    while (!m_stop.load()) {
-        while (m_pause.load() && !m_stop.load())
+    while (!m_stop.load() && m_generation.load() == generation) {
+        while (m_pause.load() && !m_stop.load() && m_generation.load() == generation)
             QThread::msleep(10);
-        if (m_stop.load())
+        if (m_stop.load() || m_generation.load() != generation)
             break;
 
         QByteArray chunk;
@@ -475,7 +486,10 @@ void PulsePlayback::runLoop()
                 else
                     break;
             }
-            const int n = qMin(chunkBytes, int(qMin(rangeEndBytes, qint64(m_pcm.size())) - m_byteOffset));
+            const int n = qMin(chunkBytes,
+                               int(qMin(rangeEndBytes, qint64(m_pcm.size())) - m_byteOffset));
+            if (n <= 0)
+                break;
             chunk = m_pcm.mid(int(m_byteOffset), n);
             m_byteOffset += n;
         }
@@ -494,25 +508,31 @@ void PulsePlayback::runLoop()
             QMutexLocker lock(&m_mutex);
             posMs = bytesToMs(m_byteOffset);
         }
-        QMetaObject::invokeMethod(this, [this, posMs]() {
-            if (m_state == Playing)
-                emit positionChanged(posMs);
-        }, Qt::QueuedConnection);
+        // Throttle position signals (~15 Hz)
+        if (posMs - lastPosEmit >= 60 || lastPosEmit < 0) {
+            lastPosEmit = posMs;
+            QMetaObject::invokeMethod(this, [this, posMs]() {
+                if (m_state == Playing)
+                    emit positionChanged(posMs);
+            }, Qt::QueuedConnection);
+        }
     }
 
     pa_simple_drain(s, &error);
     pa_simple_free(s);
 
-    QMetaObject::invokeMethod(this, [this]() {
-        if (m_state != Stopped) {
-            {
-                QMutexLocker lock(&m_mutex);
-                m_byteOffset = 0;
+    if (m_generation.load() == generation) {
+        QMetaObject::invokeMethod(this, [this]() {
+            if (m_state != Stopped) {
+                {
+                    QMutexLocker lock(&m_mutex);
+                    m_byteOffset = 0;
+                }
+                setState(Stopped);
+                emit positionChanged(0);
             }
-            setState(Stopped);
-            emit positionChanged(0);
-        }
-    }, Qt::QueuedConnection);
+        }, Qt::QueuedConnection);
+    }
 }
 
 qreal PulsePlayback::levelAtPosition(qint64 ms) const

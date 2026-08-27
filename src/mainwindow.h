@@ -9,6 +9,7 @@
 #include <QIcon>
 #include <QVector>
 #include <QElapsedTimer>
+#include <QTimer>
 #include <QAudioFormat>
 
 #include "wavwriter.h"
@@ -63,8 +64,8 @@ private slots:
     void onWaveformSeek(qreal pos);
     void onSelectionChanged(qreal start, qreal end);
 
-    void onCaptureSamples(const QByteArray &pcm, float peak);
     void onCaptureError(const QString &msg);
+    void onMeterTick();
 
 private:
     enum class AppState { Ready, Playing, Paused, Recording, Error };
@@ -151,6 +152,7 @@ private:
     bool m_restoringSettings = false;
     bool m_autoScaleWaveform = false;
     bool m_monitoring = false;
+    QTimer *m_meterTimer = nullptr;
 };
 
 #endif
