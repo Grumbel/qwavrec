@@ -1128,11 +1128,7 @@ void MainWindow::onMeterTick()
         m_duration = m_recordTimer.elapsed();
     }
 
-    // Output meter while playing
-    if (m_state == AppState::Playing && m_player && m_duration > 0) {
-        const qreal vol = m_outputVolumeSlider->value() / 100.0;
-        m_outputMeter->setLevel(m_player->levelAtPosition(m_player->position()) * vol);
-    }
+    // Output meter is updated from onPlayerPosition while playing
 }
 
 void MainWindow::onWaveformSeek(qreal pos)

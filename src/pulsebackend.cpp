@@ -293,6 +293,12 @@ PulsePlayback::PulsePlayback(QObject *parent)
 PulsePlayback::~PulsePlayback()
 {
     stop();
+    // Best-effort join so we do not tear down while pa_simple is in use
+    const auto threads = findChildren<QThread *>();
+    for (QThread *t : threads) {
+        if (t->objectName() == QLatin1String("PulsePlayback"))
+            t->wait(500);
+    }
 }
 
 bool PulsePlayback::loadPcm(const QByteArray &pcm, const QAudioFormat &format)
@@ -410,18 +416,10 @@ void PulsePlayback::pause()
 
 void PulsePlayback::stop()
 {
+    // Non-blocking: never wait on pa_simple_write/drain from the GUI thread.
     m_stop = true;
     m_pause = false;
     m_generation.fetch_add(1);
-
-    const auto threads = findChildren<QThread *>();
-    for (QThread *t : threads) {
-        if (t->objectName() != QLatin1String("PulsePlayback"))
-            continue;
-        int spins = 0;
-        while (!t->wait(20) && spins++ < 50)
-            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-    }
     {
         QMutexLocker lock(&m_mutex);
         m_byteOffset = 0;
@@ -518,7 +516,10 @@ void PulsePlayback::runLoop(int generation)
         }
     }
 
-    pa_simple_drain(s, &error);
+    // drain() blocks until the sink plays out the buffer — skips on abort
+    // so Stop/seek/reload cannot freeze the GUI waiting on the worker.
+    if (!m_stop.load() && m_generation.load() == generation)
+        pa_simple_drain(s, &error);
     pa_simple_free(s);
 
     if (m_generation.load() == generation) {
