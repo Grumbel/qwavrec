@@ -6,6 +6,7 @@ path = [
     "flake.lock",
     ".gitignore",
     "TODO.md",
+    "screenshot.png",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Ingo Ruhnke <grumbel@gmail.com>"

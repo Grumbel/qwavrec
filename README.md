@@ -9,6 +9,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 A small, traditional Qt desktop application for playing and recording audio via PipeWire (through Qt Multimedia).
 
+![QWavRec main window](screenshot.png)
+
 ## Workflow
 
 * **Record** toggles recording into an unsaved temporary document.
