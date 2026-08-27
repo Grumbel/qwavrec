@@ -103,3 +103,27 @@ void RecordingHistory::selectLatest()
     else
         m_index = m_takes.size() - 1;
 }
+
+bool RecordingHistory::selectIndex(int index)
+{
+    if (index < 0 || index >= m_takes.size())
+        return false;
+    m_index = index;
+    return true;
+}
+
+bool RecordingHistory::removeAt(int index)
+{
+    if (index < 0 || index >= m_takes.size())
+        return false;
+    const QString path = m_takes.takeAt(index);
+    QFile::remove(path);
+    if (m_takes.isEmpty()) {
+        m_index = -1;
+    } else if (m_index >= m_takes.size()) {
+        m_index = m_takes.size() - 1;
+    } else if (index < m_index) {
+        --m_index;
+    }
+    return true;
+}

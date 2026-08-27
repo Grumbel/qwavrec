@@ -34,6 +34,8 @@ public:
     QString previous();
     QString next();
     void selectLatest();
+    bool selectIndex(int index);
+    bool removeAt(int index);
     void reload();
 
     void setMaxTakes(int n);

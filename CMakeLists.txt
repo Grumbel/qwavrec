@@ -24,6 +24,8 @@ qt_add_executable(qwavrec
     src/wavwriter.h
     src/wavfile.cpp
     src/wavfile.h
+    src/historydialog.cpp
+    src/historydialog.h
     src/wavplayer.cpp
     src/wavplayer.h
     src/recordinghistory.cpp

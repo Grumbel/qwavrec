@@ -7,6 +7,7 @@
 #include "markedslider.h"
 #include "recordinghistory.h"
 #include "wavfile.h"
+#include "historydialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -154,6 +155,12 @@ void MainWindow::createActions()
     m_redoAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Right));
     connect(m_redoAction, &QAction::triggered, this, &MainWindow::onRedo);
 
+    m_historyAction = new QAction(themeIcon(QStringLiteral("view-list-details"), QStyle::SP_FileDialogDetailedView),
+                                  tr("Take &History…"), this);
+    m_historyAction->setStatusTip(tr("Browse all cached takes"));
+    m_historyAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_H));
+    connect(m_historyAction, &QAction::triggered, this, &MainWindow::onHistory);
+
     m_quitAction = new QAction(themeIcon(QStringLiteral("application-exit"), QStyle::SP_DialogCloseButton),
                                tr("&Quit"), this);
     m_quitAction->setShortcut(QKeySequence::Quit);
@@ -231,10 +238,12 @@ void MainWindow::createMenus()
     transportMenu->addSeparator();
     transportMenu->addAction(m_undoAction);
     transportMenu->addAction(m_redoAction);
+    transportMenu->addAction(m_historyAction);
     transportMenu->addSeparator();
     transportMenu->addAction(m_loopAction);
 
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
+    viewMenu->addAction(m_historyAction);
     viewMenu->addAction(m_autoScaleAction);
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
@@ -252,6 +261,7 @@ void MainWindow::createToolBar()
     tb->addSeparator();
     tb->addAction(m_undoAction);
     tb->addAction(m_redoAction);
+    tb->addAction(m_historyAction);
     tb->addSeparator();
     tb->addAction(m_normalizeAction);
     tb->addAction(m_loopAction);
@@ -790,6 +800,59 @@ void MainWindow::onRedo()
         tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size()), 3000);
 }
 
+void MainWindow::onHistory()
+{
+    if (m_state == AppState::Recording)
+        return;
+    if (m_state == AppState::Playing || m_state == AppState::Paused)
+        m_player->stop();
+
+    m_history.reload();
+    HistoryDialog dlg(m_history.takes(), m_history.currentIndex(),
+                      m_history.cacheDir(), this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    const int idx = dlg.selectedIndex();
+    if (idx < 0)
+        return;
+
+    if (dlg.deleteRequested()) {
+        const bool wasCurrent = (idx == m_history.currentIndex());
+        if (!m_history.removeAt(idx))
+            return;
+        if (wasCurrent || m_history.takes().isEmpty()) {
+            if (m_history.takes().isEmpty()) {
+                clearDocument();
+            } else {
+                const QString path = m_history.currentPath();
+                m_tempPath = path;
+                m_isTemporary = false;
+                m_savedPath.clear();
+                m_modified = true;
+                loadDocumentForPlayback(path);
+                updateWindowTitle();
+                setAppState(AppState::Ready);
+            }
+        }
+        statusBar()->showMessage(tr("Take deleted"), 3000);
+        return;
+    }
+
+    if (!m_history.selectIndex(idx))
+        return;
+    const QString path = m_history.currentPath();
+    m_tempPath = path;
+    m_isTemporary = false;
+    m_savedPath.clear();
+    m_modified = true;
+    loadDocumentForPlayback(path);
+    updateWindowTitle();
+    setAppState(AppState::Ready);
+    statusBar()->showMessage(
+        tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size()), 3000);
+}
+
 void MainWindow::onAbout()
 {
     QMessageBox::about(this, tr("About QWavRec"),
@@ -1096,6 +1159,7 @@ void MainWindow::updateControls()
     m_saveAsAction->setEnabled(!recording && hasDoc);
     m_undoAction->setEnabled(ready && m_history.canPrevious());
     m_redoAction->setEnabled(ready && m_history.canNext());
+    m_historyAction->setEnabled(ready);
     m_normalizeAction->setEnabled(ready && hasDoc);
     m_recordAction->setEnabled(ready || recording);
     m_playAction->setEnabled((ready || playing) && hasDoc);

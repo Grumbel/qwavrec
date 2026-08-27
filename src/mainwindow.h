@@ -55,6 +55,7 @@ private slots:
     void onAbout();
     void onUndo();
     void onRedo();
+    void onHistory();
 
     void onPlayerStateChanged(WavPlayer::State state);
     void onPlayerPosition(qint64 ms);
@@ -111,6 +112,7 @@ private:
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
     QAction *m_autoScaleAction = nullptr;
+    QAction *m_historyAction = nullptr;
 
     QComboBox *m_inputCombo = nullptr;
     QComboBox *m_outputCombo = nullptr;
