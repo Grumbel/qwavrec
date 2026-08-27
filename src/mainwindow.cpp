@@ -832,15 +832,24 @@ void MainWindow::onHistory()
 {
     if (m_state == AppState::Recording)
         return;
+    // Only stop playback — do not stop capture. pa_simple_read blocks, so
+    // capture->stop() waiting on the worker freezes the GUI for seconds.
     if (m_state == AppState::Playing || m_state == AppState::Paused)
-        if (m_player)
         m_player->stop();
-    if (m_capture)
-        m_capture->stop();
 
     m_history.reload();
+
     HistoryDialog dlg(m_history.takes(), m_history.currentIndex(),
                       m_history.cacheDir(), this);
+    dlg.setWindowModality(Qt::WindowModal);
+    dlg.adjustSize();
+    if (auto *p = dlg.parentWidget()) {
+        const QRect pg = p->geometry();
+        dlg.move(pg.center() - dlg.rect().center());
+    }
+    dlg.show();
+    dlg.raise();
+    dlg.activateWindow();
     if (dlg.exec() != QDialog::Accepted)
         return;
 

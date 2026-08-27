@@ -54,13 +54,14 @@ signals:
     void stopped();
 
 private:
-    void runLoop(QString sourceName);
+    void runLoop(QString sourceName, int session);
 
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stop{false};
     QThread m_thread;
     QAudioFormat m_format;
     qreal m_gain = 1.0;
+    std::atomic<int> m_session{0};
 };
 
 /**

@@ -20,6 +20,7 @@ HistoryDialog::HistoryDialog(const QStringList &takes, int currentIndex,
     , m_takes(takes)
 {
     setWindowTitle(tr("Take History"));
+    setWindowFlags(windowFlags() | Qt::Dialog);
     setMinimumSize(480, 360);
     resize(520, 420);
 

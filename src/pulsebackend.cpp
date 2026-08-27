@@ -8,6 +8,8 @@
 #include <pulse/error.h>
 
 #include <QMetaObject>
+#include <QCoreApplication>
+#include <QEventLoop>
 #include <QtMath>
 #include <cstring>
 
@@ -196,9 +198,10 @@ bool PulseCapture::start(const QString &sourceName, int sampleRate, int channels
     m_format.setSampleFormat(QAudioFormat::Int16);
     m_stop = false;
     m_running = true;
+    const int session = m_session.load();
 
     const QString name = sourceName;
-    auto *thr = QThread::create([this, name]() { runLoop(name); });
+    auto *thr = QThread::create([this, name, session]() { runLoop(name, session); });
     connect(thr, &QThread::finished, thr, &QObject::deleteLater);
     // Track via m_thread is awkward with QThread::create; store pointer
     thr->setObjectName(QStringLiteral("PulseCapture"));
@@ -210,17 +213,14 @@ bool PulseCapture::start(const QString &sourceName, int sampleRate, int channels
 
 void PulseCapture::stop()
 {
+    // pa_simple_read() blocks until the next fragment; waiting here freezes
+    // the GUI. Just signal the worker — it exits after the current read.
     m_stop = true;
-    // Wait for capture threads we parented
-    const auto threads = findChildren<QThread *>();
-    for (QThread *t : threads) {
-        if (t->objectName() == QLatin1String("PulseCapture"))
-            t->wait(3000);
-    }
     m_running = false;
+    m_session.fetch_add(1);
 }
 
-void PulseCapture::runLoop(QString sourceName)
+void PulseCapture::runLoop(QString sourceName, int session)
 {
     pa_sample_spec ss;
     ss.format = PA_SAMPLE_S16LE;
@@ -247,7 +247,7 @@ void PulseCapture::runLoop(QString sourceName)
     const int chunkFrames = int(ss.rate) / 50;
     QByteArray buf(chunkFrames * frameBytes, Qt::Uninitialized);
 
-    while (!m_stop.load()) {
+    while (!m_stop.load() && m_session.load() == session) {
         if (pa_simple_read(s, buf.data(), size_t(buf.size()), &error) < 0)
             break;
 
@@ -262,9 +262,12 @@ void PulseCapture::runLoop(QString sourceName)
             samples[i] = qint16(v * 32767.f);
         }
 
+        if (m_session.load() != session)
+            break;
         const QByteArray copy = buf;
-        QMetaObject::invokeMethod(this, [this, copy, peak]() {
-            emit samplesReady(copy, peak);
+        QMetaObject::invokeMethod(this, [this, copy, peak, session]() {
+            if (m_session.load() == session)
+                emit samplesReady(copy, peak);
         }, Qt::QueuedConnection);
     }
 
@@ -408,8 +411,13 @@ void PulsePlayback::stop()
     m_pause = false;
     const auto threads = findChildren<QThread *>();
     for (QThread *t : threads) {
-        if (t->objectName() == QLatin1String("PulsePlayback"))
-            t->wait(3000);
+        if (t->objectName() != QLatin1String("PulsePlayback"))
+            continue;
+        // Process events while waiting so queued signals from the worker
+        // cannot deadlock against the GUI thread.
+        int spins = 0;
+        while (!t->wait(50) && spins++ < 60)
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     }
     {
         QMutexLocker lock(&m_mutex);
