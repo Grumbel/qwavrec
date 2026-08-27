@@ -373,16 +373,17 @@ void MainWindow::createToolBar()
     tb->addAction(m_openAction);
     tb->addAction(m_saveAction);
     tb->addSeparator();
-    // Previous / Next take (history navigation)
-    tb->addAction(m_undoAction);
-    tb->addAction(m_redoAction);
-    tb->addAction(m_historyAction);
-    tb->addSeparator();
     // Document edit undo/redo
     tb->addAction(m_editUndoAction);
     tb->addAction(m_editRedoAction);
-    // Loop lives under the transport buttons with Insert
-    // Normalize stays in Edit menu only — avoids accidental clicks
+
+    // Push take navigation to the right edge (above the Takes dock)
+    auto *spacer = new QWidget;
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    tb->addWidget(spacer);
+    tb->addAction(m_undoAction);   // Previous Take
+    tb->addAction(m_redoAction);   // Next Take
+    tb->addAction(m_historyAction);
 }
 
 void MainWindow::createCentralWidget()
