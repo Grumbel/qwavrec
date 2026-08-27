@@ -150,14 +150,17 @@ void WaveformWidget::mouseMoveEvent(QMouseEvent *event)
         m_selStart = qMin(m_dragAnchor, p);
         m_selEnd = qMax(m_dragAnchor, p);
         update();
+        emit selectionChanged(m_selStart, m_selEnd);
     } else if (m_drag == Drag::EdgeA) {
         m_moved = true;
         m_selStart = qBound(0.0, p, m_selEnd - 1e-4);
         update();
+        emit selectionChanged(m_selStart, m_selEnd);
     } else if (m_drag == Drag::EdgeB) {
         m_moved = true;
         m_selEnd = qBound(m_selStart + 1e-4, p, 1.0);
         update();
+        emit selectionChanged(m_selStart, m_selEnd);
     }
     QWidget::mouseMoveEvent(event);
 }

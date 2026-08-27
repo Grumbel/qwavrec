@@ -448,9 +448,20 @@ void MainWindow::createCentralWidget()
     m_seekSlider->setRange(0, 0);
     mainLayout->addWidget(m_seekSlider);
 
-    m_timeLabel = new QLabel(tr("00:00 / 00:00"));
+    m_timeLabel = new QLabel(tr("00:00.000 / 00:00.000"));
     m_timeLabel->setAlignment(Qt::AlignCenter);
+    QFont timeFont = m_timeLabel->font();
+    timeFont.setPointSizeF(timeFont.pointSizeF() + 1.0);
+    timeFont.setBold(true);
+    m_timeLabel->setFont(timeFont);
     mainLayout->addWidget(m_timeLabel);
+
+    // Prominent A–B readout (live while dragging); hidden when no selection
+    m_selectionLabel = new QLabel;
+    m_selectionLabel->setAlignment(Qt::AlignCenter);
+    m_selectionLabel->setVisible(false);
+    m_selectionLabel->setStyleSheet(QStringLiteral("color: #c8a020;"));
+    mainLayout->addWidget(m_selectionLabel);
 
     auto *buttonLayout = new QHBoxLayout;
     buttonLayout->setSpacing(12);
@@ -1823,19 +1834,37 @@ void MainWindow::onWaveformSeek(qreal pos)
 
 void MainWindow::onSelectionChanged(qreal start, qreal end)
 {
+    Q_UNUSED(start);
+    Q_UNUSED(end);
     applySelectionToPlayer();
     updateEditActions();
-    if (m_state == AppState::Recording)
-        return; // insert preview updates selection without spamming the status bar
-    if (end > start + 1e-6 && m_duration > 0) {
-        statusBar()->showMessage(
-            tr("Selection A–B: %1 – %2")
-                .arg(formatTime(qint64(start * m_duration)))
-                .arg(formatTime(qint64(end * m_duration))),
-            0);
-    } else {
-        statusBar()->showMessage(tr("Selection cleared"), 2000);
+    updateSelectionLabel();
+}
+
+void MainWindow::updateSelectionLabel()
+{
+    if (!m_selectionLabel)
+        return;
+    if (m_state == AppState::Recording) {
+        // Insert preview owns the selection highlight; keep the label quiet
+        if (!m_insertRecord) {
+            m_selectionLabel->clear();
+            m_selectionLabel->setVisible(false);
+        }
+        return;
     }
+    if (!m_waveform || !m_waveform->hasSelection() || m_duration <= 0) {
+        m_selectionLabel->clear();
+        m_selectionLabel->setVisible(false);
+        return;
+    }
+    const qint64 a = qint64(m_waveform->selectionStart() * m_duration);
+    const qint64 b = qint64(m_waveform->selectionEnd() * m_duration);
+    const qint64 len = qMax(qint64(0), b - a);
+    m_selectionLabel->setText(
+        tr("A–B  %1 – %2   (%3)")
+            .arg(formatTime(a), formatTime(b), formatTime(len)));
+    m_selectionLabel->setVisible(true);
 }
 
 void MainWindow::applySelectionToPlayer()
@@ -1907,6 +1936,7 @@ void MainWindow::onPlayerDuration(qint64 ms)
     m_duration = ms;
     m_seekSlider->setRange(0, static_cast<int>(ms));
     updateTimeLabel();
+    updateSelectionLabel();
     applySelectionToPlayer();
 }
 

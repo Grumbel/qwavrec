@@ -92,6 +92,7 @@ private:
     void setAppState(AppState state);
     void updateControls();
     void updateTimeLabel();
+    void updateSelectionLabel();
     void updateWindowTitle();
     void updateMicGainLabel();
     void updatePlaybackVolumeLabel();
@@ -159,6 +160,7 @@ private:
     QLabel *m_playbackVolumeLabel = nullptr;
     SeekSlider *m_seekSlider = nullptr;
     QLabel *m_timeLabel = nullptr;
+    QLabel *m_selectionLabel = nullptr;
     LevelMeter *m_inputMeter = nullptr;
     LevelMeter *m_outputMeter = nullptr;
     WaveformWidget *m_waveform = nullptr;
