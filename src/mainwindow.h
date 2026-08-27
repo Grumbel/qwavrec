@@ -182,7 +182,10 @@ private:
     qint64 m_insertAtMs = 0;
     QByteArray m_insertBasePcm;
     QAudioFormat m_insertBaseFormat;
+    QVector<float> m_insertBasePeaks;
+    qint64 m_insertBaseDurationMs = 0;
     QString m_captureTempPath;
+    void updateInsertPreviewWaveform();
 
     QString m_savedPath;
     QString m_tempPath;

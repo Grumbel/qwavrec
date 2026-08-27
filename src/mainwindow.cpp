@@ -719,6 +719,8 @@ void MainWindow::onRecord()
     m_insertRecord = m_insertRecordAction && m_insertRecordAction->isChecked();
     m_insertBasePcm.clear();
     m_insertBaseFormat = QAudioFormat();
+    m_insertBasePeaks.clear();
+    m_insertBaseDurationMs = 0;
     m_insertAtMs = 0;
     m_captureTempPath.clear();
 
@@ -733,6 +735,10 @@ void MainWindow::onRecord()
         // Snapshot document before anything can change it
         m_insertBasePcm = m_player->pcm();
         m_insertBaseFormat = m_player->format();
+        m_insertBaseDurationMs = m_player->duration();
+        m_insertBasePeaks = m_rawPeaks;
+        if (m_insertBasePeaks.isEmpty())
+            m_insertBasePeaks = WavFile::peaks(m_insertBasePcm, m_insertBaseFormat, 400);
         m_insertAtMs = m_player->position();
         if (m_seekSlider && m_seekSlider->value() > m_insertAtMs)
             m_insertAtMs = m_seekSlider->value();
@@ -879,6 +885,7 @@ void MainWindow::finishRecordingStop()
             QFile::remove(m_captureTempPath);
         m_captureTempPath.clear();
         m_insertBasePcm.clear();
+        m_insertBasePeaks.clear();
         m_recordPcm.clear();
 
         applyDocumentPcm(out, capFmt);
@@ -1631,6 +1638,72 @@ void MainWindow::onCaptureError(const QString &msg)
         onRecord();
 }
 
+
+void MainWindow::updateInsertPreviewWaveform()
+{
+    // Composite: left of insert point | growing capture | right of insert point
+    const int targetBins = 400;
+    const qint64 liveMs = qMax(qint64(1), m_recordTimer.elapsed());
+    const qint64 baseMs = qMax(qint64(1), m_insertBaseDurationMs);
+    const qint64 totalMs = baseMs + liveMs;
+
+    int leftBins = int(qreal(m_insertAtMs) / totalMs * targetBins);
+    int liveBins = int(qreal(liveMs) / totalMs * targetBins);
+    int rightBins = targetBins - leftBins - liveBins;
+    if (leftBins < 0)
+        leftBins = 0;
+    if (liveBins < 1)
+        liveBins = 1;
+    if (rightBins < 0) {
+        liveBins += rightBins;
+        rightBins = 0;
+    }
+
+    QVector<float> out;
+    out.reserve(targetBins);
+
+    const int nBase = m_insertBasePeaks.size();
+    const qreal split = (baseMs > 0) ? qreal(m_insertAtMs) / baseMs : 0.0;
+    const int splitIdx = qBound(0, int(split * nBase), nBase);
+
+    auto sampleBase = [&](int from, int to, int bins) {
+        if (bins <= 0 || nBase <= 0 || to <= from)
+            return;
+        for (int i = 0; i < bins; ++i) {
+            const int idx = from + int(qreal(i) / bins * (to - from));
+            out.append(m_insertBasePeaks.at(qBound(0, idx, nBase - 1)));
+        }
+    };
+
+    sampleBase(0, splitIdx, leftBins);
+
+    // Live insert peaks (resample to liveBins)
+    if (!m_liveRecordPeaks.isEmpty()) {
+        for (int i = 0; i < liveBins; ++i) {
+            const int idx = int(qreal(i) / liveBins * m_liveRecordPeaks.size());
+            out.append(m_liveRecordPeaks.at(qBound(0, idx, m_liveRecordPeaks.size() - 1)));
+        }
+    } else {
+        for (int i = 0; i < liveBins; ++i)
+            out.append(0.f);
+    }
+
+    sampleBase(splitIdx, nBase, rightBins);
+
+    while (out.size() < targetBins)
+        out.append(0.f);
+    if (out.size() > targetBins)
+        out.resize(targetBins);
+
+    m_rawPeaks = out;
+    m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+
+    // Highlight the growing insert region as A–B
+    const qreal a = qreal(m_insertAtMs) / totalMs;
+    const qreal b = qreal(m_insertAtMs + liveMs) / totalMs;
+    m_waveform->setSelection(a, b);
+}
+
 void MainWindow::onMeterTick()
 {
     if (!m_capture)
@@ -1662,11 +1735,26 @@ void MainWindow::onMeterTick()
                     reduced.append(qMax(m_liveRecordPeaks[i], m_liveRecordPeaks[i + 1]));
                 m_liveRecordPeaks = reduced;
             }
-            m_rawPeaks = m_liveRecordPeaks;
-            m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+            if (m_insertRecord && !m_insertBasePeaks.isEmpty()) {
+                updateInsertPreviewWaveform();
+            } else {
+                m_rawPeaks = m_liveRecordPeaks;
+                m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+            }
         }
-        m_timeLabel->setText(formatTime(m_recordTimer.elapsed()));
-        m_duration = m_recordTimer.elapsed();
+        if (m_insertRecord && !m_insertBasePeaks.isEmpty()) {
+            const qint64 liveMs = m_recordTimer.elapsed();
+            const qint64 totalMs = qMax(qint64(1), m_insertBaseDurationMs + liveMs);
+            m_duration = totalMs;
+            m_timeLabel->setText(tr("%1 / %2")
+                .arg(formatTime(m_insertAtMs + liveMs), formatTime(totalMs)));
+            m_seekSlider->setRange(0, int(totalMs));
+            m_seekSlider->setValue(int(m_insertAtMs + liveMs));
+            m_waveform->setPlaybackPosition(qreal(m_insertAtMs + liveMs) / totalMs);
+        } else {
+            m_timeLabel->setText(formatTime(m_recordTimer.elapsed()));
+            m_duration = m_recordTimer.elapsed();
+        }
     }
 
     // Output meter is updated from onPlayerPosition while playing
@@ -1685,6 +1773,8 @@ void MainWindow::onSelectionChanged(qreal start, qreal end)
 {
     applySelectionToPlayer();
     updateEditActions();
+    if (m_state == AppState::Recording)
+        return; // insert preview updates selection without spamming the status bar
     if (end > start + 1e-6 && m_duration > 0) {
         statusBar()->showMessage(
             tr("Selection A–B: %1 – %2")
