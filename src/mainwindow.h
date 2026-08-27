@@ -61,6 +61,7 @@ private slots:
     void onPlayerError(const QString &msg);
     void onSeek(int value);
     void onWaveformSeek(qreal pos);
+    void onSelectionChanged(qreal start, qreal end);
 
     void onCaptureSamples(const QByteArray &pcm, float peak);
     void onCaptureError(const QString &msg);
@@ -82,6 +83,7 @@ private:
 
     void startMonitoring();
     void stopMonitoring();
+    void applySelectionToPlayer();
 
     bool maybeSave();
     void clearDocument();

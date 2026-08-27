@@ -333,10 +333,26 @@ qint64 PulsePlayback::position() const
 void PulsePlayback::setSinkName(const QString &name) { m_sinkName = name; }
 void PulsePlayback::setVolume(qreal volume) { m_volume = qBound(0.0, volume, 1.0); }
 
+void PulsePlayback::setPlayRange(qint64 startMs, qint64 endMs)
+{
+    QMutexLocker lock(&m_mutex);
+    m_rangeStartMs = qMax(qint64(0), startMs);
+    m_rangeEndMs = endMs;
+}
+
+void PulsePlayback::clearPlayRange()
+{
+    QMutexLocker lock(&m_mutex);
+    m_rangeStartMs = 0;
+    m_rangeEndMs = -1;
+}
+
 void PulsePlayback::setPosition(qint64 ms)
 {
     QMutexLocker lock(&m_mutex);
-    ms = qBound(qint64(0), ms, m_durationMs);
+    qint64 lo = m_rangeStartMs;
+    qint64 hi = (m_rangeEndMs > m_rangeStartMs) ? m_rangeEndMs : m_durationMs;
+    ms = qBound(lo, ms, hi);
     m_byteOffset = msToBytes(ms);
     const int bpf = m_format.bytesPerFrame();
     if (bpf > 0)
@@ -366,6 +382,14 @@ void PulsePlayback::play()
 
     m_stop = false;
     m_pause = false;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (m_rangeEndMs > m_rangeStartMs) {
+            const qint64 pos = bytesToMs(m_byteOffset);
+            if (pos < m_rangeStartMs || pos >= m_rangeEndMs)
+                m_byteOffset = msToBytes(m_rangeStartMs);
+        }
+    }
     setState(Playing);
 
     auto *thr = QThread::create([this]() { runLoop(); });
@@ -438,13 +462,16 @@ void PulsePlayback::runLoop()
         QByteArray chunk;
         {
             QMutexLocker lock(&m_mutex);
-            if (m_byteOffset >= m_pcm.size()) {
+            const qint64 rangeEndBytes = (m_rangeEndMs > m_rangeStartMs)
+                ? msToBytes(m_rangeEndMs) : m_pcm.size();
+            const qint64 rangeStartBytes = msToBytes(m_rangeStartMs);
+            if (m_byteOffset >= rangeEndBytes || m_byteOffset >= m_pcm.size()) {
                 if (m_loop)
-                    m_byteOffset = 0;
+                    m_byteOffset = rangeStartBytes;
                 else
                     break;
             }
-            const int n = qMin(chunkBytes, int(m_pcm.size() - m_byteOffset));
+            const int n = qMin(chunkBytes, int(qMin(rangeEndBytes, qint64(m_pcm.size())) - m_byteOffset));
             chunk = m_pcm.mid(int(m_byteOffset), n);
             m_byteOffset += n;
         }

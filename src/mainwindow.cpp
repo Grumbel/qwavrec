@@ -72,6 +72,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_outputCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onOutputDeviceChanged);
     connect(m_waveform, &WaveformWidget::seekRequested, this, &MainWindow::onWaveformSeek);
+    connect(m_waveform, &WaveformWidget::selectionChanged, this, &MainWindow::onSelectionChanged);
     connect(m_inputVolumeSlider, &QSlider::valueChanged, this, &MainWindow::onInputVolumeChanged);
     connect(m_outputVolumeSlider, &QSlider::valueChanged, this, &MainWindow::onOutputVolumeChanged);
 
@@ -316,6 +317,8 @@ void MainWindow::createCentralWidget()
     mainLayout->addLayout(meterForm);
 
     m_waveform = new WaveformWidget;
+    m_waveform->setToolTip(tr("Drag to select region A–B (playback/loop limited to selection).\n"
+                              "Click to seek. Double-click to clear selection."));
     mainLayout->addWidget(m_waveform, 1);
 
     m_seekSlider = new QSlider(Qt::Horizontal);
@@ -466,7 +469,9 @@ void MainWindow::loadDocumentForPlayback(const QString &path)
         return;
     }
     m_player->loadPcm(info.pcm, info.format);
+    m_player->clearPlayRange();
     setWaveformFromPcm(info.pcm, info.format);
+    m_waveform->clearSelection();
 }
 
 void MainWindow::onNew()
@@ -1067,6 +1072,33 @@ void MainWindow::onWaveformSeek(qreal pos)
     onSeek(ms);
 }
 
+void MainWindow::onSelectionChanged(qreal start, qreal end)
+{
+    applySelectionToPlayer();
+    if (end > start + 1e-6 && m_duration > 0) {
+        statusBar()->showMessage(
+            tr("Selection A–B: %1 – %2")
+                .arg(formatTime(qint64(start * m_duration)))
+                .arg(formatTime(qint64(end * m_duration))),
+            0);
+    } else {
+        statusBar()->showMessage(tr("Selection cleared"), 2000);
+    }
+}
+
+void MainWindow::applySelectionToPlayer()
+{
+    if (!m_player || m_duration <= 0)
+        return;
+    if (m_waveform->hasSelection()) {
+        const qint64 a = qint64(m_waveform->selectionStart() * m_duration);
+        const qint64 b = qint64(m_waveform->selectionEnd() * m_duration);
+        m_player->setPlayRange(a, b);
+    } else {
+        m_player->clearPlayRange();
+    }
+}
+
 void MainWindow::onPlayerStateChanged(PulsePlayback::State state)
 {
     switch (state) {
@@ -1116,6 +1148,7 @@ void MainWindow::onPlayerDuration(qint64 ms)
     m_duration = ms;
     m_seekSlider->setRange(0, static_cast<int>(ms));
     updateTimeLabel();
+    applySelectionToPlayer();
 }
 
 void MainWindow::onPlayerError(const QString &msg)

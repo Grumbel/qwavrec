@@ -83,6 +83,9 @@ public:
     void setVolume(qreal volume); // 0..1 — software scale
     void setSinkName(const QString &name);
     void setLoop(bool loop) { m_loop = loop; }
+    /** Limit playback to [startMs, endMs]; use endMs<=startMs for full file. */
+    void setPlayRange(qint64 startMs, qint64 endMs);
+    void clearPlayRange();
 
     State state() const { return m_state; }
     qint64 position() const;
@@ -109,6 +112,8 @@ private:
     qint64 m_byteOffset = 0;
     qreal m_volume = 0.8;
     bool m_loop = false;
+    qint64 m_rangeStartMs = 0;
+    qint64 m_rangeEndMs = -1; // -1 = full duration
 
     std::atomic<bool> m_stop{false};
     std::atomic<bool> m_pause{false};
