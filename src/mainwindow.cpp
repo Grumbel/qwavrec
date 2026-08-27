@@ -392,41 +392,45 @@ void MainWindow::createCentralWidget()
     setCentralWidget(central);
     auto *mainLayout = new QVBoxLayout(central);
 
-    auto *deviceForm = new QFormLayout;
+    // Group by signal path: Input (device → gain → meter), then Output.
     m_inputCombo = new QComboBox;
     m_outputCombo = new QComboBox;
-    deviceForm->addRow(tr("Input"), m_inputCombo);
-    deviceForm->addRow(tr("Output"), m_outputCombo);
-    mainLayout->addLayout(deviceForm);
 
-    auto *volForm = new QFormLayout;
     m_inputVolumeSlider = new MarkedSlider(Qt::Horizontal);
     m_inputVolumeSlider->setRange(0, 300); // 0..3×
     m_inputVolumeSlider->setMarkerValue(100); // unity
     m_inputVolumeSlider->setToolTip(tr("Microphone gain — yellow mark is unity (100%). Above = boost."));
     m_micGainLabel = new QLabel(tr("100%"));
     m_micGainLabel->setMinimumWidth(48);
-    auto *micRow = new QHBoxLayout;
-    micRow->addWidget(m_inputVolumeSlider, 1);
-    micRow->addWidget(m_micGainLabel);
+    m_inputMeter = new LevelMeter;
+    m_inputMeter->setMinimumWidth(120);
+
     m_outputVolumeSlider = new QSlider(Qt::Horizontal);
     m_outputVolumeSlider->setRange(0, 100);
     m_outputVolumeSlider->setToolTip(tr("Playback volume"));
     m_playbackVolumeLabel = new QLabel(tr("80%"));
     m_playbackVolumeLabel->setMinimumWidth(48);
-    auto *outRow = new QHBoxLayout;
-    outRow->addWidget(m_outputVolumeSlider, 1);
-    outRow->addWidget(m_playbackVolumeLabel);
-    volForm->addRow(tr("Mic gain"), micRow);
-    volForm->addRow(tr("Playback volume"), outRow);
-    mainLayout->addLayout(volForm);
-
-    auto *meterForm = new QFormLayout;
-    m_inputMeter = new LevelMeter;
     m_outputMeter = new LevelMeter;
-    meterForm->addRow(tr("Input"), m_inputMeter);
-    meterForm->addRow(tr("Output"), m_outputMeter);
-    mainLayout->addLayout(meterForm);
+    m_outputMeter->setMinimumWidth(120);
+
+    auto *ioForm = new QFormLayout;
+    ioForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+
+    ioForm->addRow(tr("Input"), m_inputCombo);
+    auto *inLevelRow = new QHBoxLayout;
+    inLevelRow->addWidget(m_inputVolumeSlider, 1);
+    inLevelRow->addWidget(m_micGainLabel);
+    inLevelRow->addWidget(m_inputMeter, 1);
+    ioForm->addRow(tr("Mic gain"), inLevelRow);
+
+    ioForm->addRow(tr("Output"), m_outputCombo);
+    auto *outLevelRow = new QHBoxLayout;
+    outLevelRow->addWidget(m_outputVolumeSlider, 1);
+    outLevelRow->addWidget(m_playbackVolumeLabel);
+    outLevelRow->addWidget(m_outputMeter, 1);
+    ioForm->addRow(tr("Volume"), outLevelRow);
+
+    mainLayout->addLayout(ioForm);
 
     m_waveform = new WaveformWidget;
     m_waveform->setToolTip(tr(
