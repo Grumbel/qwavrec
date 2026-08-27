@@ -235,25 +235,35 @@ void WaveformWidget::paintEvent(QPaintEvent *)
                     QColor(180, 160, 40, 70));
     }
 
+    // Closed path: top outline left→right, bottom outline right→left, then fill
     const int n = m_peaks.size();
     const qreal mid = r.center().y();
-    const qreal amp = r.height() * 0.45;
-    QPainterPath pathTop;
-    QPainterPath pathBot;
+    const qreal amp = r.height() / 2.0 - 3.0;
+    const qreal step = r.width() / static_cast<qreal>(qMax(1, n));
+    QPainterPath path;
+    path.moveTo(r.left(), mid);
     for (int i = 0; i < n; ++i) {
-        const qreal x = r.left() + (qreal(i) + 0.5) / n * r.width();
-        const qreal v = qBound(0.0, qreal(m_peaks.at(i)), 1.0) * amp;
-        if (i == 0) {
-            pathTop.moveTo(x, mid - v);
-            pathBot.moveTo(x, mid + v);
-        } else {
-            pathTop.lineTo(x, mid - v);
-            pathBot.lineTo(x, mid + v);
-        }
+        const qreal v = qBound(0.0, qreal(m_peaks.at(i)), 1.0);
+        const qreal x = r.left() + (i + 0.5) * step;
+        path.lineTo(x, mid - amp * v);
     }
-    p.setPen(QPen(QColor(40, 180, 70), 1.2));
-    p.drawPath(pathTop);
-    p.drawPath(pathBot);
+    for (int i = n - 1; i >= 0; --i) {
+        const qreal v = qBound(0.0, qreal(m_peaks.at(i)), 1.0);
+        const qreal x = r.left() + (i + 0.5) * step;
+        path.lineTo(x, mid + amp * v);
+    }
+    path.closeSubpath();
+
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0, 160, 70, 120));
+    p.drawPath(path);
+    p.setPen(QPen(QColor(80, 230, 120), 1.2));
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(path);
+
+    // Center line under the wave
+    p.setPen(QPen(QColor(20, 50, 30), 1, Qt::DotLine));
+    p.drawLine(r.left(), int(mid), r.right(), int(mid));
 
     // Selection edges (highlight hovered / active)
     if (hasSelection()) {
