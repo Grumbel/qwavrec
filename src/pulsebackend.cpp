@@ -304,14 +304,20 @@ PulsePlayback::~PulsePlayback()
 bool PulsePlayback::loadPcm(const QByteArray &pcm, const QAudioFormat &format)
 {
     stop();
-    QMutexLocker lock(&m_mutex);
-    m_pcm = pcm;
-    m_format = format;
-    m_byteOffset = 0;
-    m_durationMs = 0;
-    if (format.sampleRate() > 0 && format.bytesPerFrame() > 0)
-        m_durationMs = (pcm.size() / format.bytesPerFrame()) * 1000 / format.sampleRate();
-    emit durationChanged(m_durationMs);
+    // Never emit while holding m_mutex: slots (updateTimeLabel → position())
+    // re-enter the same non-recursive mutex and deadlock the GUI thread.
+    qint64 durationMs = 0;
+    {
+        QMutexLocker lock(&m_mutex);
+        m_pcm = pcm;
+        m_format = format;
+        m_byteOffset = 0;
+        m_durationMs = 0;
+        if (format.sampleRate() > 0 && format.bytesPerFrame() > 0)
+            m_durationMs = (pcm.size() / format.bytesPerFrame()) * 1000 / format.sampleRate();
+        durationMs = m_durationMs;
+    }
+    emit durationChanged(durationMs);
     emit positionChanged(0);
     return !pcm.isEmpty();
 }
@@ -355,14 +361,17 @@ void PulsePlayback::clearPlayRange()
 
 void PulsePlayback::setPosition(qint64 ms)
 {
-    QMutexLocker lock(&m_mutex);
-    qint64 lo = m_rangeStartMs;
-    qint64 hi = (m_rangeEndMs > m_rangeStartMs) ? m_rangeEndMs : m_durationMs;
-    ms = qBound(lo, ms, hi);
-    m_byteOffset = msToBytes(ms);
-    const int bpf = m_format.bytesPerFrame();
-    if (bpf > 0)
-        m_byteOffset = (m_byteOffset / bpf) * bpf;
+    // Emit only after releasing the mutex — slots may call position()/levelAtPosition().
+    {
+        QMutexLocker lock(&m_mutex);
+        qint64 lo = m_rangeStartMs;
+        qint64 hi = (m_rangeEndMs > m_rangeStartMs) ? m_rangeEndMs : m_durationMs;
+        ms = qBound(lo, ms, hi);
+        m_byteOffset = msToBytes(ms);
+        const int bpf = m_format.bytesPerFrame();
+        if (bpf > 0)
+            m_byteOffset = (m_byteOffset / bpf) * bpf;
+    }
     emit positionChanged(ms);
 }
 

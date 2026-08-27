@@ -179,6 +179,7 @@ for the current take. Bump when **starting** a new capture stream.
 | `Q_DECLARE_METATYPE` redefinition via moc | Prefer `Q_ENUM(State)` on `QObject` |
 | Slot declared, never defined | Link error from moc — remove or implement |
 | `QFile::open` nodiscard | Check return value |
+| Emit Qt signals while holding `QMutex` | Slots may re-enter the same non-recursive mutex → **deadlock**. Unlock first, then emit. Hit in `PulsePlayback::loadPcm` → `durationChanged` → `updateTimeLabel` → `position()`. |
 
 ## Non-goals (do not grow into)
 
