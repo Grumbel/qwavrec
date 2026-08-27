@@ -31,8 +31,7 @@ There is **no Qt API switch** to show monitors. Options if we want them:
    so a monitor shows up as a normal source in Qt.
 
 Until (1) or (2) is done, **monitors will not appear** in the Input
-combo. About text already mentions this; the UI could be clearer
-(e.g. a short note under the Input dropdown).
+combo. About text already mentions this; a short note is shown under the Input dropdown; monitors still require remap or native API.
 
 ---
 
@@ -47,7 +46,7 @@ Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
   model: *current buffer* vs *last exported path*, and surface the
   cache only under a “History / Takes” UI.
 
-- [ ] **Undo/Redo label vs behaviour**  
+- [x] **Undo/Redo label vs behaviour** (→ Previous/Next Take, Transport menu, Ctrl+Left/Right)  
   File → Undo Take is not document undo (text/waveform edit). It
   navigates a take list. That conflicts with standard Edit → Undo
   expectations and shortcuts (Ctrl+Z). Rename to “Previous take” /
@@ -87,7 +86,7 @@ Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
   build. Plural forms for “Take %1/%2” ok; cache messages not reviewed
   for translators.
 
-- [ ] **Desktop entry**  
+- [x] **Desktop entry** (comment no longer claims PipeWire-only)  
   Comment still says “PipeWire” though capture is Qt Multimedia
   (Pulse/PipeWire backend). Categories look fine. No
   `StartupWMClass` if the WM class differs from the binary name.
@@ -106,13 +105,13 @@ Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
   design brainstorm asked for append until File→New). Current behaviour
   is replace-current + archive previous. Decide and document one model.
 
-- [ ] **`m_modified` after archive**  
+- [x] **`m_modified` after archive** (quit prompt clarifies cache vs export)  
   Cache files are durable, but we still mark modified and prompt on
   quit. Reasonable for “not exported to Music/”, but the prompt says
   “has not been saved” which is ambiguous if the take is already in
   `~/.cache/qwavrec`.
 
-- [ ] **Normalize only supports Int16**  
+- [x] **Normalize only supports Int16** (warns the user on failure)  
   Float/other formats fail silently-ish (`return false`). Should
   message the user.
 
@@ -127,7 +126,7 @@ Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
   or fail to start record. Consider starting the source only when
   needed (record or explicit “monitor” mode).
 
-- [ ] **Output meter is peak-from-file, not post-volume**  
+- [x] **Output meter is peak-from-file, not post-volume** (scaled by playback volume)  
   Level is independent of the playback volume slider (pre-fader).
   Either document that or apply volume in the meter.
 
@@ -136,7 +135,7 @@ Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
   loop on, pause during loop restart, change output device while
   playing.
 
-- [ ] **History grows without bound**  
+- [x] **History grows without bound** (pruned to 50 takes)  
   Every take is kept under `~/.cache/qwavrec` with no max count/size
   or UI to prune. Risk of filling disk on long sessions.
 

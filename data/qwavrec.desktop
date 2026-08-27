@@ -5,10 +5,10 @@
 Type=Application
 Name=QWavRec
 GenericName=Audio Player/Recorder
-Comment=Simple PipeWire audio player and recorder
+Comment=Simple WAV audio player and recorder
 Exec=qwavrec
 Icon=qwavrec
 Terminal=false
 Categories=AudioVideo;Audio;Player;Recorder;
-Keywords=audio;player;recorder;pipewire;microphone;speaker;wav;
+Keywords=audio;player;recorder;microphone;speaker;wav;
 StartupNotify=true

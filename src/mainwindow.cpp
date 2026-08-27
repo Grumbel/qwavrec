@@ -141,14 +141,16 @@ void MainWindow::createActions()
     m_saveAsAction->setShortcut(QKeySequence::SaveAs);
     connect(m_saveAsAction, &QAction::triggered, this, &MainWindow::onSaveAs);
 
-    m_undoAction = new QAction(themeIcon(QStringLiteral("edit-undo"), QStyle::SP_ArrowBack),
-                               tr("&Undo Take"), this);
-    m_undoAction->setShortcut(QKeySequence::Undo);
+    m_undoAction = new QAction(themeIcon(QStringLiteral("go-previous"), QStyle::SP_ArrowBack),
+                               tr("&Previous Take"), this);
+    m_undoAction->setStatusTip(tr("Load the previous take from the local cache history"));
+    m_undoAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Left));
     connect(m_undoAction, &QAction::triggered, this, &MainWindow::onUndo);
 
-    m_redoAction = new QAction(themeIcon(QStringLiteral("edit-redo"), QStyle::SP_ArrowForward),
-                               tr("&Redo Take"), this);
-    m_redoAction->setShortcut(QKeySequence::Redo);
+    m_redoAction = new QAction(themeIcon(QStringLiteral("go-next"), QStyle::SP_ArrowForward),
+                               tr("&Next Take"), this);
+    m_redoAction->setStatusTip(tr("Load the next take from the local cache history"));
+    m_redoAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Right));
     connect(m_redoAction, &QAction::triggered, this, &MainWindow::onRedo);
 
     m_quitAction = new QAction(themeIcon(QStringLiteral("application-exit"), QStyle::SP_DialogCloseButton),
@@ -216,9 +218,6 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_saveAction);
     fileMenu->addAction(m_saveAsAction);
     fileMenu->addSeparator();
-    fileMenu->addAction(m_undoAction);
-    fileMenu->addAction(m_redoAction);
-    fileMenu->addSeparator();
     fileMenu->addAction(m_quitAction);
 
     QMenu *editMenu = menuBar()->addMenu(tr("&Edit"));
@@ -228,6 +227,9 @@ void MainWindow::createMenus()
     transportMenu->addAction(m_recordAction);
     transportMenu->addAction(m_playAction);
     transportMenu->addAction(m_stopAction);
+    transportMenu->addSeparator();
+    transportMenu->addAction(m_undoAction);
+    transportMenu->addAction(m_redoAction);
     transportMenu->addSeparator();
     transportMenu->addAction(m_loopAction);
 
@@ -266,6 +268,11 @@ void MainWindow::createCentralWidget()
     deviceForm->addRow(tr("Input"), m_inputCombo);
     deviceForm->addRow(tr("Output"), m_outputCombo);
     mainLayout->addLayout(deviceForm);
+    auto *monitorHint = new QLabel(
+        tr("Monitor sources are hidden by Qt; use module-remap-source if needed."));
+    monitorHint->setWordWrap(true);
+    monitorHint->setStyleSheet(QStringLiteral("color: gray; font-size: 11px;"));
+    mainLayout->addWidget(monitorHint);
 
     auto *volForm = new QFormLayout;
     m_inputVolumeSlider = new MarkedSlider(Qt::Horizontal);
@@ -407,7 +414,9 @@ bool MainWindow::maybeSave()
         return true;
     const auto ret = QMessageBox::warning(
         this, tr("QWavRec"),
-        tr("The recording has not been saved.\nDo you want to save it?"),
+        tr("This take has not been exported to a file yet.\n"
+           "(It is still kept in the local cache under ~/.cache/qwavrec.)\n\n"
+           "Export a copy now?"),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
         QMessageBox::Save);
     if (ret == QMessageBox::Save) {
@@ -686,6 +695,10 @@ void MainWindow::onRecord()
     markModified();
     setAppState(AppState::Recording);
     m_recordAction->setChecked(true);
+    if (m_history.takes().size() > 0)
+        statusBar()->showMessage(
+            tr("Recording… (previous takes remain in cache, %1 total)")
+                .arg(m_history.takes().size()), 0);
 }
 
 void MainWindow::onPlay()
@@ -746,6 +759,10 @@ void MainWindow::onNormalize()
         loadDocumentForPlayback(documentPathForPlayback());
         markModified();
         statusBar()->showMessage(tr("Normalized to peak"), 3000);
+    } else {
+        QMessageBox::warning(this, tr("Normalize"),
+            tr("Could not normalize this file.\n"
+               "Only 16-bit PCM WAV is supported."));
     }
 }
 
@@ -868,7 +885,7 @@ void MainWindow::onUndo()
         return;
     if (m_state == AppState::Playing || m_state == AppState::Paused)
         m_player->stop();
-    const QString path = m_history.undo();
+    const QString path = m_history.previous();
     if (path.isEmpty())
         return;
     m_tempPath = path;
@@ -888,7 +905,7 @@ void MainWindow::onRedo()
         return;
     if (m_state == AppState::Playing || m_state == AppState::Paused)
         m_player->stop();
-    const QString path = m_history.redo();
+    const QString path = m_history.next();
     if (path.isEmpty())
         return;
     m_tempPath = path;
@@ -1138,8 +1155,10 @@ void MainWindow::onPlayerPosition(qint64 ms)
         updateTimeLabel();
         if (m_duration > 0)
             m_waveform->setPlaybackPosition(static_cast<qreal>(ms) / m_duration);
-        if (m_state == AppState::Playing)
-            m_outputMeter->setLevel(m_player->levelAtPosition(ms));
+        if (m_state == AppState::Playing) {
+            const qreal vol = m_outputVolumeSlider->value() / 100.0;
+            m_outputMeter->setLevel(m_player->levelAtPosition(ms) * vol);
+        }
     }
 }
 
@@ -1190,8 +1209,8 @@ void MainWindow::updateControls()
     m_openAction->setEnabled(!recording);
     m_saveAction->setEnabled(!recording && (m_modified || hasDoc));
     m_saveAsAction->setEnabled(!recording && hasDoc);
-    m_undoAction->setEnabled(ready && m_history.canUndo());
-    m_redoAction->setEnabled(ready && m_history.canRedo());
+    m_undoAction->setEnabled(ready && m_history.canPrevious());
+    m_redoAction->setEnabled(ready && m_history.canNext());
     m_normalizeAction->setEnabled(ready && hasDoc);
     m_recordAction->setEnabled(ready || recording);
     m_playAction->setEnabled((ready || playing) && hasDoc);

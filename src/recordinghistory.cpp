@@ -10,7 +10,6 @@
 
 RecordingHistory::RecordingHistory()
 {
-    // Prefer XDG_CACHE_HOME, fall back to ~/.cache/qwavrec
     m_dir = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation);
     if (m_dir.isEmpty())
         m_dir = QDir::homePath() + QStringLiteral("/.cache");
@@ -32,6 +31,26 @@ void RecordingHistory::reload()
         m_index = m_takes.size() - 1;
 }
 
+void RecordingHistory::setMaxTakes(int n)
+{
+    m_maxTakes = qMax(1, n);
+    prune();
+}
+
+void RecordingHistory::prune()
+{
+    while (m_takes.size() > m_maxTakes) {
+        const QString old = m_takes.takeFirst();
+        QFile::remove(old);
+        if (m_index > 0)
+            --m_index;
+        else if (m_index == 0 && !m_takes.isEmpty())
+            m_index = 0;
+    }
+    if (m_takes.isEmpty())
+        m_index = -1;
+}
+
 QString RecordingHistory::archiveTake(const QString &sourcePath)
 {
     if (sourcePath.isEmpty() || !QFileInfo::exists(sourcePath))
@@ -47,7 +66,11 @@ QString RecordingHistory::archiveTake(const QString &sourcePath)
 
     m_takes.append(dest);
     m_index = m_takes.size() - 1;
-    return dest;
+    prune();
+    // After prune, index may need clamp
+    if (!m_takes.isEmpty())
+        m_index = m_takes.size() - 1;
+    return m_takes.isEmpty() ? QString() : m_takes.last();
 }
 
 QString RecordingHistory::currentPath() const
@@ -57,17 +80,17 @@ QString RecordingHistory::currentPath() const
     return m_takes.at(m_index);
 }
 
-QString RecordingHistory::undo()
+QString RecordingHistory::previous()
 {
-    if (!canUndo())
+    if (!canPrevious())
         return {};
     --m_index;
     return currentPath();
 }
 
-QString RecordingHistory::redo()
+QString RecordingHistory::next()
 {
-    if (!canRedo())
+    if (!canNext())
         return {};
     ++m_index;
     return currentPath();

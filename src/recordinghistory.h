@@ -9,12 +9,14 @@
 #include <QDir>
 
 /**
- * Keeps every finished take under $XDG_CACHE_HOME/qwavrec/ (or
- * QStandardPaths::CacheLocation) and supports undo/redo navigation.
+ * Keeps finished takes under $XDG_CACHE_HOME/qwavrec/ and supports
+ * previous/next navigation. Oldest files are pruned when over the limit.
  */
 class RecordingHistory
 {
 public:
+    static constexpr int DefaultMaxTakes = 50;
+
     RecordingHistory();
 
     QString cacheDir() const { return m_dir; }
@@ -22,30 +24,28 @@ public:
     /** Copy a finished recording into the cache; returns the new path. */
     QString archiveTake(const QString &sourcePath);
 
-    /** Paths of archived takes, oldest first. */
     QStringList takes() const { return m_takes; }
-
     int currentIndex() const { return m_index; }
     QString currentPath() const;
 
-    bool canUndo() const { return m_index > 0; }
-    bool canRedo() const { return m_index >= 0 && m_index < m_takes.size() - 1; }
+    bool canPrevious() const { return m_index > 0; }
+    bool canNext() const { return m_index >= 0 && m_index < m_takes.size() - 1; }
 
-    /** Move to previous take; returns path or empty. */
-    QString undo();
-    /** Move to next take; returns path or empty. */
-    QString redo();
-
-    /** Jump to latest take after a new archive. */
+    QString previous();
+    QString next();
     void selectLatest();
-
-    /** Rescan the cache directory. */
     void reload();
 
+    void setMaxTakes(int n);
+    int maxTakes() const { return m_maxTakes; }
+
 private:
+    void prune();
+
     QString m_dir;
     QStringList m_takes;
     int m_index = -1;
+    int m_maxTakes = DefaultMaxTakes;
 };
 
 #endif
