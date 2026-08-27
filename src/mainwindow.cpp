@@ -283,10 +283,27 @@ void MainWindow::createActions()
     m_editRedoAction->setStatusTip(tr("Redo the last undone edit"));
     connect(m_editRedoAction, &QAction::triggered, this, &MainWindow::onEditRedo);
 
-    m_insertRecordAction = new QAction(tr("Record &Insert"), this);
+    {
+        // Distinct from Record: red bar with a vertical insert mark
+        QPixmap pix(48, 48);
+        pix.fill(Qt::transparent);
+        QPainter painter(&pix);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setBrush(QColor(40, 40, 40));
+        painter.setPen(QPen(QColor(20, 20, 20), 2));
+        painter.drawRoundedRect(6, 16, 36, 16, 3, 3);
+        painter.setBrush(QColor(220, 50, 50));
+        painter.setPen(Qt::NoPen);
+        painter.drawRect(18, 8, 12, 32); // insert block
+        painter.setPen(QPen(QColor(255, 220, 60), 3));
+        painter.drawLine(24, 4, 24, 44); // playhead mark
+        m_insertRecordAction = new QAction(QIcon(pix), tr("&Insert"), this);
+    }
     m_insertRecordAction->setCheckable(true);
     m_insertRecordAction->setStatusTip(
-        tr("When checked, the next recording is inserted at the playhead instead of a new take"));
+        tr("Insert mode: recording is spliced into the current document at the playhead "
+           "(instead of starting a new take)"));
+    m_insertRecordAction->setToolTip(tr("Insert at playhead"));
     connect(m_insertRecordAction, &QAction::toggled, this, &MainWindow::onInsertRecordToggled);
 
 
@@ -435,6 +452,7 @@ void MainWindow::createCentralWidget()
     };
     buttonLayout->addStretch();
     buttonLayout->addWidget(makeBig(m_recordAction));
+    buttonLayout->addWidget(makeBig(m_insertRecordAction));
     buttonLayout->addWidget(makeBig(m_playAction));
     buttonLayout->addWidget(makeBig(m_stopAction));
     buttonLayout->addStretch();
@@ -451,6 +469,7 @@ void MainWindow::loadSettings()
     const int mic = s.value(QStringLiteral("audio/micGain"), 100).toInt();
     const int out = s.value(QStringLiteral("audio/playbackVolume"), 80).toInt();
     const bool loop = s.value(QStringLiteral("playback/loop"), false).toBool();
+    const bool insertRec = s.value(QStringLiteral("playback/insertRecord"), false).toBool();
     const bool autoScale = s.value(QStringLiteral("view/autoScaleWaveform"), false).toBool();
 
     m_restoringSettings = true;
@@ -458,6 +477,10 @@ void MainWindow::loadSettings()
     m_outputVolumeSlider->setValue(qBound(0, out, 100));
     m_loopAction->setChecked(loop);
     m_player->setLoop(loop);
+    if (m_insertRecordAction) {
+        m_insertRecordAction->setChecked(insertRec);
+        m_insertRecord = insertRec;
+    }
     m_autoScaleWaveform = autoScale;
     m_autoScaleAction->setChecked(autoScale);
     const bool showTakes = s.value(QStringLiteral("view/takesPanel"), false).toBool();
@@ -481,6 +504,8 @@ void MainWindow::saveSettings()
     s.setValue(QStringLiteral("audio/micGain"), m_inputVolumeSlider->value());
     s.setValue(QStringLiteral("audio/playbackVolume"), m_outputVolumeSlider->value());
     s.setValue(QStringLiteral("playback/loop"), m_loopAction->isChecked());
+    s.setValue(QStringLiteral("playback/insertRecord"),
+               m_insertRecordAction && m_insertRecordAction->isChecked());
     s.setValue(QStringLiteral("view/autoScaleWaveform"), m_autoScaleWaveform);
     s.setValue(QStringLiteral("view/takesPanel"), m_takesDock && m_takesDock->isVisible());
 }
@@ -686,10 +711,28 @@ void MainWindow::onRecord()
         return;
     }
 
-    // Capture insert point before stopping playback
+    // Keep action state as source of truth
+    m_insertRecord = m_insertRecordAction && m_insertRecordAction->isChecked();
+    m_insertBasePcm.clear();
+    m_insertBaseFormat = QAudioFormat();
     m_insertAtMs = 0;
-    if (m_insertRecord && m_player && !m_player->pcm().isEmpty()) {
+    m_captureTempPath.clear();
+
+    if (m_insertRecord) {
+        if (!m_player || m_player->pcm().isEmpty()) {
+            QMessageBox::information(this, tr("Insert"),
+                tr("Nothing to insert into.\n"
+                   "Open or record a take first, seek to the insert point, then record."));
+            m_recordAction->setChecked(false);
+            return;
+        }
+        // Snapshot document before anything can change it
+        m_insertBasePcm = m_player->pcm();
+        m_insertBaseFormat = m_player->format();
         m_insertAtMs = m_player->position();
+        if (m_seekSlider && m_seekSlider->value() > m_insertAtMs)
+            m_insertAtMs = m_seekSlider->value();
+        m_insertAtMs = qBound(qint64(0), m_insertAtMs, m_player->duration());
         if (m_state == AppState::Playing || m_state == AppState::Paused)
             m_player->stop();
     } else {
@@ -707,11 +750,11 @@ void MainWindow::onRecord()
         m_recordAction->setChecked(false);
         return;
     }
-    const QString recordPath = tmp.fileName();
+    m_captureTempPath = tmp.fileName();
     tmp.close();
 
     if (!m_insertRecord) {
-        m_tempPath = recordPath;
+        m_tempPath = m_captureTempPath;
         m_isTemporary = true;
     }
 
@@ -732,14 +775,11 @@ void MainWindow::onRecord()
     fmt.setSampleFormat(QAudioFormat::Int16);
     fmt.setSampleRate(48000);
     fmt.setChannelCount(1);
-    if (!m_wavWriter.open(recordPath, fmt)) {
+    if (!m_wavWriter.open(m_captureTempPath, fmt)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not open WAV file for writing."));
         m_recordAction->setChecked(false);
         return;
     }
-    // Stash path for finishRecordingStop when inserting
-    if (m_insertRecord)
-        m_tempPath = recordPath; // temporary capture file; will splice then rewrite doc
 
     m_liveRecordPeaks.clear();
     m_recordPcm.clear();
@@ -760,10 +800,8 @@ void MainWindow::onRecord()
 
 void MainWindow::finishRecordingStop()
 {
-    // 1) Stop queuing PCM; keep capture stream for the input meter.
     m_capture->setRecording(false);
 
-    // 2) Drain anything still in the capture queue (no sleeps).
     for (int i = 0; i < 3; ++i) {
         const QByteArray rest = m_capture->takeRecordedAudio();
         if (rest.isEmpty())
@@ -775,65 +813,83 @@ void MainWindow::finishRecordingStop()
     m_wavWriter.close();
     m_recordAction->setChecked(false);
 
-    const bool inserting = m_insertRecord && !m_recordPcm.isEmpty();
-    QByteArray basePcm;
-    QAudioFormat baseFmt;
-    if (inserting && m_player) {
-        basePcm = m_player->pcm();
-        baseFmt = m_player->format();
-    }
+    const bool wantInsert = m_insertRecord && !m_insertBasePcm.isEmpty();
 
-    // 3) Waveform from live peaks — no disk read (new take only).
-    if (!inserting && !m_liveRecordPeaks.isEmpty()) {
+    if (!wantInsert && !m_liveRecordPeaks.isEmpty()) {
         m_rawPeaks = m_liveRecordPeaks;
         m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
     }
 
-    // 4) Unlock UI immediately.
     setAppState(AppState::Ready);
     m_monitoring = m_capture && m_capture->isRunning();
 
     if (m_recordPcm.isEmpty()) {
-        if (!m_tempPath.isEmpty() && m_isTemporary)
-            QFile::remove(m_tempPath);
-        if (!inserting)
-            m_tempPath.clear();
+        if (!m_captureTempPath.isEmpty())
+            QFile::remove(m_captureTempPath);
+        m_captureTempPath.clear();
+        m_insertBasePcm.clear();
         m_recordPcm.clear();
         statusBar()->showMessage(tr("Recording produced no audio data."), 3000);
         return;
     }
 
-    QAudioFormat fmt;
-    fmt.setSampleFormat(QAudioFormat::Int16);
-    fmt.setSampleRate(48000);
-    fmt.setChannelCount(1);
+    QAudioFormat capFmt;
+    capFmt.setSampleFormat(QAudioFormat::Int16);
+    capFmt.setSampleRate(48000);
+    capFmt.setChannelCount(1);
 
-    if (inserting && !basePcm.isEmpty()
-        && baseFmt.sampleFormat() == fmt.sampleFormat()
-        && baseFmt.sampleRate() == fmt.sampleRate()
-        && baseFmt.channelCount() == fmt.channelCount()) {
-        // Splice new capture at playhead into existing document
+    if (wantInsert) {
+        const QAudioFormat baseFmt = m_insertBaseFormat;
+        const bool fmtOk =
+            baseFmt.sampleFormat() == capFmt.sampleFormat()
+            && baseFmt.sampleRate() == capFmt.sampleRate()
+            && baseFmt.channelCount() == capFmt.channelCount();
+        if (!fmtOk) {
+            QMessageBox::warning(this, tr("Insert"),
+                tr("Cannot insert: the document format does not match the capture format "
+                   "(need 48 kHz mono 16-bit).\n"
+                   "The new audio was discarded; the document is unchanged."));
+            if (!m_captureTempPath.isEmpty())
+                QFile::remove(m_captureTempPath);
+            m_captureTempPath.clear();
+            m_insertBasePcm.clear();
+            m_recordPcm.clear();
+            return;
+        }
+
         pushEditUndo(tr("Insert recording"));
-        const int bpf = fmt.bytesPerFrame();
-        const int frames = basePcm.size() / bpf;
-        int at = int(fmt.framesForDuration(m_insertAtMs * 1000));
+        const int bpf = capFmt.bytesPerFrame();
+        const int frames = m_insertBasePcm.size() / bpf;
+        int at = 0;
+        if (capFmt.sampleRate() > 0)
+            at = int(capFmt.framesForDuration(m_insertAtMs * 1000));
         at = qBound(0, at, frames);
+
         QByteArray out;
-        out.reserve(basePcm.size() + m_recordPcm.size());
-        out.append(basePcm.constData(), at * bpf);
+        out.reserve(m_insertBasePcm.size() + m_recordPcm.size());
+        out.append(m_insertBasePcm.constData(), at * bpf);
         out.append(m_recordPcm);
-        out.append(basePcm.constData() + at * bpf, (frames - at) * bpf);
-        // Remove the temporary capture file path confusion
-        if (!m_tempPath.isEmpty())
-            QFile::remove(m_tempPath);
-        applyDocumentPcm(out, fmt);
+        out.append(m_insertBasePcm.constData() + at * bpf, (frames - at) * bpf);
+
+        if (!m_captureTempPath.isEmpty())
+            QFile::remove(m_captureTempPath);
+        m_captureTempPath.clear();
+        m_insertBasePcm.clear();
         m_recordPcm.clear();
+
+        applyDocumentPcm(out, capFmt);
         statusBar()->showMessage(tr("Inserted recording at %1").arg(formatTime(m_insertAtMs)), 4000);
         return;
     }
 
-    // 5) Hand PCM to player from memory — no WavFile::load on the GUI thread.
-    m_player->loadPcm(m_recordPcm, fmt);
+    // New take path
+    if (!m_tempPath.isEmpty() && m_tempPath != m_captureTempPath && m_isTemporary)
+        QFile::remove(m_tempPath);
+    if (!m_captureTempPath.isEmpty())
+        m_tempPath = m_captureTempPath;
+    m_isTemporary = true;
+
+    m_player->loadPcm(m_recordPcm, capFmt);
     m_player->clearPlayRange();
     m_waveform->clearSelection();
     m_duration = m_player->duration();
@@ -844,7 +900,6 @@ void MainWindow::finishRecordingStop()
     m_editRedo.clear();
     updateEditActions();
 
-    // 6) Archive to cache on the next event-loop turn.
     const QString tempPath = m_tempPath;
     const bool isTemp = m_isTemporary;
     QTimer::singleShot(0, this, [this, tempPath, isTemp]() {
@@ -865,6 +920,7 @@ void MainWindow::finishRecordingStop()
             statusBar()->showMessage(tr("Could not archive take to cache"), 4000);
         }
         m_recordPcm.clear();
+        m_captureTempPath.clear();
     });
 }
 

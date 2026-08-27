@@ -180,6 +180,9 @@ private:
     static const int kMaxEditUndo = 20;
     bool m_insertRecord = false;
     qint64 m_insertAtMs = 0;
+    QByteArray m_insertBasePcm;
+    QAudioFormat m_insertBaseFormat;
+    QString m_captureTempPath;
 
     QString m_savedPath;
     QString m_tempPath;
