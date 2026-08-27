@@ -8,9 +8,9 @@
 #include <QVector>
 
 /**
- * Displays either:
- *  - a static waveform of the current document (peaks), with a playhead, or
- *  - a short live scrolling level history when no document is loaded.
+ * Static document waveform with an optional playhead.
+ * Does not scroll or animate on its own — only changes when setPeaks /
+ * setPlaybackPosition / clear are called.
  */
 class WaveformWidget : public QWidget
 {
@@ -18,17 +18,9 @@ class WaveformWidget : public QWidget
 public:
     explicit WaveformWidget(QWidget *parent = nullptr);
 
-    /** Replace the static document waveform (empty = clear). */
     void setPeaks(const QVector<float> &peaks);
-
-    /** Clear both static peaks and live history. */
     void clear();
-
-    /** Playhead position 0..1 over the static waveform. */
-    void setPlaybackPosition(qreal pos);
-
-    /** Feed a live level sample (only used when there are no static peaks). */
-    void addLiveLevel(qreal level);
+    void setPlaybackPosition(qreal pos); // 0..1
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -36,9 +28,7 @@ protected:
     QSize minimumSizeHint() const override;
 
 private:
-    QVector<float> m_peaks;       // static document waveform, 0..1
-    QVector<float> m_live;        // short scrolling history when no peaks
-    static const int LiveSize = 128;
+    QVector<float> m_peaks;
     qreal m_playbackPos = 0.0;
 };
 
