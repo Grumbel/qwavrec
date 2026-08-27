@@ -515,8 +515,9 @@ void PulsePlayback::runLoop(int generation)
             QMutexLocker lock(&m_mutex);
             posMs = bytesToMs(m_byteOffset);
         }
-        // Throttle position signals (~15 Hz)
-        if (posMs - lastPosEmit >= 60 || lastPosEmit < 0) {
+        // Throttle position signals (~15 Hz). On loop wrap posMs jumps
+        // backward — must emit or the seek bar / waveform stay stuck at EOF.
+        if (lastPosEmit < 0 || posMs < lastPosEmit || posMs - lastPosEmit >= 60) {
             lastPosEmit = posMs;
             QMetaObject::invokeMethod(this, [this, posMs]() {
                 if (m_state == Playing)
