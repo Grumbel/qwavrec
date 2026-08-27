@@ -357,6 +357,12 @@ void MainWindow::onRecord()
     m_recorder->setMediaFormat(format);
     m_recorder->setQuality(QMediaRecorder::HighQuality);
     m_waveform->clear();
+
+    // Stop the level-monitor QAudioSource so it does not contend with the
+    // recorder for the same PipeWire capture node. Concurrent opens of the
+    // same device are a common cause of truncated recordings.
+    stopInputMonitoring();
+
     m_recorder->record();
 }
 
@@ -431,14 +437,20 @@ void MainWindow::onPlayerStateChanged(QMediaPlayer::PlaybackState state)
 void MainWindow::onRecorderStateChanged(QMediaRecorder::RecorderState state)
 {
     switch (state) {
-    case QMediaRecorder::RecordingState: setAppState(AppState::Recording); break;
+    case QMediaRecorder::RecordingState:
+        setAppState(AppState::Recording);
+        break;
     case QMediaRecorder::StoppedState:
         if (m_state == AppState::Recording) {
+            // Recorder has finished writing; the WAV header is finalized here.
             setAppState(AppState::Ready);
             m_inputMeter->setLevel(0.0);
+            // Resume live input monitoring now that the capture device is free.
+            startInputMonitoring();
         }
         break;
-    default: break;
+    default:
+        break;
     }
 }
 
