@@ -369,11 +369,17 @@ void MainWindow::createToolBar()
     QToolBar *tb = addToolBar(tr("Main"));
     tb->setMovable(false);
     tb->setIconSize(QSize(24, 24));
+    // File
     tb->addAction(m_newAction);
     tb->addAction(m_openAction);
     tb->addAction(m_saveAction);
     tb->addSeparator();
-    // Document edit undo/redo
+    // Clipboard (standard: Cut / Copy / Paste)
+    tb->addAction(m_cutAction);
+    tb->addAction(m_copyAction);
+    tb->addAction(m_pasteAction);
+    tb->addSeparator();
+    // Document edit history
     tb->addAction(m_editUndoAction);
     tb->addAction(m_editRedoAction);
 
