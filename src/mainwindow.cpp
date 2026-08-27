@@ -356,12 +356,13 @@ void MainWindow::createToolBar()
     tb->addAction(m_openAction);
     tb->addAction(m_saveAction);
     tb->addSeparator();
-    tb->addAction(m_undoAction);
-    tb->addAction(m_redoAction);
-    tb->addAction(m_historyAction);
+    // Edit undo/redo (not Previous/Next Take — those stay under Transport)
+    tb->addAction(m_editUndoAction);
+    tb->addAction(m_editRedoAction);
     tb->addSeparator();
-    tb->addAction(m_normalizeAction);
+    tb->addAction(m_historyAction);
     tb->addAction(m_loopAction);
+    // Normalize stays in Edit menu only — avoids accidental clicks
 }
 
 void MainWindow::createCentralWidget()
