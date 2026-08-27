@@ -21,4 +21,18 @@ private:
     int m_marker = -1;
 };
 
+/**
+ * Timeline slider: click on the groove jumps to that absolute position
+ * (stock QSlider only page-steps by a few units, which is useless for ms ranges).
+ */
+class SeekSlider : public QSlider
+{
+    Q_OBJECT
+public:
+    explicit SeekSlider(Qt::Orientation o, QWidget *parent = nullptr);
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override;
+};
+
 #endif

@@ -6,6 +6,7 @@
 #include <QPainter>
 #include <QStyle>
 #include <QStyleOptionSlider>
+#include <QMouseEvent>
 
 MarkedSlider::MarkedSlider(Qt::Orientation o, QWidget *parent)
     : QSlider(o, parent)
@@ -47,4 +48,34 @@ void MarkedSlider::paintEvent(QPaintEvent *event)
         p.setPen(QPen(QColor(220, 180, 40), 2));
         p.drawLine(gr.left(), y, gr.right(), y);
     }
+}
+
+SeekSlider::SeekSlider(Qt::Orientation o, QWidget *parent)
+    : QSlider(o, parent)
+{
+    setTracking(true);
+}
+
+void SeekSlider::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && maximum() > minimum()) {
+        QStyleOptionSlider opt;
+        initStyleOption(&opt);
+        const QRect handle = style()->subControlRect(
+            QStyle::CC_Slider, &opt, QStyle::SC_SliderHandle, this);
+        // Click on the groove (not the handle) → jump absolutely.
+        // Stock QSlider would only page-step (~10 ms on a ms-range timeline).
+        if (!handle.contains(event->position().toPoint())) {
+            const int pos = (orientation() == Qt::Horizontal)
+                ? int(event->position().x())
+                : int(event->position().y());
+            const int span = (orientation() == Qt::Horizontal) ? width() : height();
+            const int val = QStyle::sliderValueFromPosition(
+                minimum(), maximum(), pos, span, invertedAppearance());
+            setValue(val);
+            event->accept();
+            return;
+        }
+    }
+    QSlider::mousePressEvent(event);
 }

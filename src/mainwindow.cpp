@@ -109,13 +109,12 @@ MainWindow::MainWindow(QWidget *parent)
         m_seeking = false;
         onSeek(m_seekSlider->value());
     });
-    // Clicking the groove updates value then fires this — jump immediately
-    connect(m_seekSlider, &QSlider::actionTriggered, this, [this](int) {
-        if (m_seeking)
+    // Absolute groove click (SeekSlider) and keyboard changes: seek immediately.
+    // Player position updates use blockSignals, so they do not re-enter onSeek.
+    connect(m_seekSlider, &QSlider::valueChanged, this, [this](int v) {
+        if (m_seeking || m_state == AppState::Recording)
             return;
-        onSeek(m_seekSlider->value());
-        if (m_duration > 0)
-            m_waveform->setPlaybackPosition(double(m_seekSlider->value()) / m_duration);
+        onSeek(v);
     });
     connect(m_seekSlider, &QSlider::sliderMoved, this, [this](int v) {
         if (m_seeking) {
@@ -445,7 +444,7 @@ void MainWindow::createCentralWidget()
         "Click to seek. Double-click clears selection. Right-click for edit menu."));
     mainLayout->addWidget(m_waveform, 1);
 
-    m_seekSlider = new QSlider(Qt::Horizontal);
+    m_seekSlider = new SeekSlider(Qt::Horizontal);
     m_seekSlider->setRange(0, 0);
     mainLayout->addWidget(m_seekSlider);
 
@@ -1982,9 +1981,14 @@ void MainWindow::updateWindowTitle()
 
 QString MainWindow::formatTime(qint64 ms) const
 {
-    if (ms < 0) ms = 0;
+    if (ms < 0)
+        ms = 0;
     const int totalSecs = static_cast<int>(ms / 1000);
-    return QStringLiteral("%1:%2")
-        .arg(totalSecs / 60, 2, 10, QLatin1Char('0'))
-        .arg(totalSecs % 60, 2, 10, QLatin1Char('0'));
+    const int mins = totalSecs / 60;
+    const int secs = totalSecs % 60;
+    const int millis = static_cast<int>(ms % 1000);
+    return QStringLiteral("%1:%2.%3")
+        .arg(mins, 2, 10, QLatin1Char('0'))
+        .arg(secs, 2, 10, QLatin1Char('0'))
+        .arg(millis, 3, 10, QLatin1Char('0'));
 }

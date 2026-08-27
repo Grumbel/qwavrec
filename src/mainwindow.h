@@ -26,6 +26,7 @@ class QAction;
 class LevelMeter;
 class WaveformWidget;
 class MarkedSlider;
+class SeekSlider;
 
 class MainWindow : public QMainWindow
 {
@@ -156,7 +157,7 @@ private:
     QLabel *m_micGainLabel = nullptr;
     QSlider *m_outputVolumeSlider = nullptr;
     QLabel *m_playbackVolumeLabel = nullptr;
-    QSlider *m_seekSlider = nullptr;
+    SeekSlider *m_seekSlider = nullptr;
     QLabel *m_timeLabel = nullptr;
     LevelMeter *m_inputMeter = nullptr;
     LevelMeter *m_outputMeter = nullptr;
