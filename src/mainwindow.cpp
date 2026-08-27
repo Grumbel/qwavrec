@@ -120,10 +120,8 @@ MainWindow::~MainWindow()
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     saveSettings();
-    if (maybeSave())
-        event->accept();
-    else
-        event->ignore();
+    // Takes are already archived in the cache — no discard prompt.
+    event->accept();
 }
 
 QIcon MainWindow::themeIcon(const QString &name, QStyle::StandardPixmap fallback) const
@@ -432,21 +430,7 @@ void MainWindow::markModified()
 
 bool MainWindow::maybeSave()
 {
-    if (!m_modified)
-        return true;
-    const auto ret = QMessageBox::warning(
-        this, tr("QWavRec"),
-        tr("This take has not been exported to a file yet.\n"
-           "(It is still kept in the local cache under ~/.cache/qwavrec.)\n\n"
-           "Export a copy now?"),
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-        QMessageBox::Save);
-    if (ret == QMessageBox::Save) {
-        onSave();
-        return !m_modified;
-    }
-    if (ret == QMessageBox::Cancel)
-        return false;
+    // Cache holds every take; no blocking prompt on New/Open/Quit.
     return true;
 }
 
