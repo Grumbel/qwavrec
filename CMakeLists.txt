@@ -22,6 +22,8 @@ qt_add_executable(qwavrec
     src/waveformwidget.h
     src/wavwriter.cpp
     src/wavwriter.h
+    src/wavplayer.cpp
+    src/wavplayer.h
 )
 
 target_link_libraries(qwavrec PRIVATE

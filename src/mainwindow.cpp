@@ -24,17 +24,17 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QAudioDevice>
+#include <QAudioFormat>
 #include <QStyle>
 #include <QIcon>
 #include <QApplication>
-#include <QAudioFormat>
-#include <QAudioBuffer>
 #include <QPainter>
 #include <QPixmap>
 #include <QKeySequence>
 #include <QCloseEvent>
 #include <QTemporaryFile>
 #include <QtMath>
+#include <QtEndian>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -53,15 +53,11 @@ MainWindow::MainWindow(QWidget *parent)
     createToolBar();
     createCentralWidget();
 
-    m_player = new QMediaPlayer(this);
-    m_audioOutput = new QAudioOutput(this);
-    m_player->setAudioOutput(m_audioOutput);
-    m_audioOutput->setVolume(0.8);
-
-    m_bufferOutput = new QAudioBufferOutput(this);
-    m_player->setAudioBufferOutput(m_bufferOutput);
-    connect(m_bufferOutput, &QAudioBufferOutput::audioBufferReceived,
-            this, &MainWindow::onAudioBufferReceived);
+    m_player = new WavPlayer(this);
+    connect(m_player, &WavPlayer::stateChanged, this, &MainWindow::onPlayerStateChanged);
+    connect(m_player, &WavPlayer::positionChanged, this, &MainWindow::onPlayerPosition);
+    connect(m_player, &WavPlayer::durationChanged, this, &MainWindow::onPlayerDuration);
+    connect(m_player, &WavPlayer::errorOccurred, this, &MainWindow::onPlayerError);
 
     connect(&m_devices, &QMediaDevices::audioInputsChanged, this, &MainWindow::updateAudioDevices);
     connect(&m_devices, &QMediaDevices::audioOutputsChanged, this, &MainWindow::updateAudioDevices);
@@ -71,11 +67,6 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::onOutputDeviceChanged);
     connect(m_inputVolumeSlider, &QSlider::valueChanged, this, &MainWindow::onInputVolumeChanged);
     connect(m_outputVolumeSlider, &QSlider::valueChanged, this, &MainWindow::onOutputVolumeChanged);
-
-    connect(m_player, &QMediaPlayer::positionChanged, this, &MainWindow::onPositionChanged);
-    connect(m_player, &QMediaPlayer::durationChanged, this, &MainWindow::onDurationChanged);
-    connect(m_player, &QMediaPlayer::playbackStateChanged, this, &MainWindow::onPlayerStateChanged);
-    connect(m_player, &QMediaPlayer::errorOccurred, this, &MainWindow::onPlayerError);
 
     connect(m_seekSlider, &QSlider::sliderPressed, this, [this]() { m_seeking = true; });
     connect(m_seekSlider, &QSlider::sliderReleased, this, [this]() {
@@ -91,7 +82,7 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     updateAudioDevices();
-    m_inputVolumeSlider->setValue(100); // 1.0×
+    m_inputVolumeSlider->setValue(100);
     m_outputVolumeSlider->setValue(80);
     setAppState(AppState::Ready);
     startAudioSource();
@@ -101,11 +92,9 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     if (m_state == AppState::Recording)
-        onRecord(); // stop & finalize
+        onRecord();
     stopAudioSource();
-    stopDecoder();
-    if (m_state == AppState::Playing || m_state == AppState::Paused)
-        m_player->stop();
+    m_player->stop();
     if (!m_tempPath.isEmpty() && m_isTemporary)
         QFile::remove(m_tempPath);
 }
@@ -223,8 +212,8 @@ void MainWindow::createCentralWidget()
 
     auto *volForm = new QFormLayout;
     m_inputVolumeSlider = new QSlider(Qt::Horizontal);
-    m_inputVolumeSlider->setRange(0, 200); // 0..2×, 100 = unity
-    m_inputVolumeSlider->setToolTip(tr("Microphone gain (100% = unity, 200% = +6 dB boost)"));
+    m_inputVolumeSlider->setRange(0, 200);
+    m_inputVolumeSlider->setToolTip(tr("Microphone gain (100% = unity, 200% = boost)"));
     m_outputVolumeSlider = new QSlider(Qt::Horizontal);
     m_outputVolumeSlider->setRange(0, 100);
     m_outputVolumeSlider->setToolTip(tr("Playback volume"));
@@ -270,8 +259,6 @@ void MainWindow::createCentralWidget()
     statusBar()->showMessage(tr("Ready"));
 }
 
-// ---- Document ----
-
 bool MainWindow::hasDocument() const
 {
     return !m_tempPath.isEmpty() || !m_savedPath.isEmpty();
@@ -286,33 +273,12 @@ QString MainWindow::documentPathForPlayback() const
     return {};
 }
 
-void MainWindow::setDocumentPath(const QString &path, bool isTemporary)
-{
-    if (!m_tempPath.isEmpty() && m_isTemporary && m_tempPath != path)
-        QFile::remove(m_tempPath);
-
-    if (isTemporary) {
-        m_tempPath = path;
-        m_isTemporary = true;
-    } else {
-        m_savedPath = path;
-        m_tempPath.clear();
-        m_isTemporary = false;
-        m_modified = false;
-    }
-    m_fileLabel->setText(isTemporary ? tr("Untitled (unsaved)") : QFileInfo(path).fileName());
-    m_fileLabel->setToolTip(path);
-    updateWindowTitle();
-}
-
 void MainWindow::clearDocument()
 {
     if (m_state == AppState::Recording)
         onRecord();
-    if (m_state == AppState::Playing || m_state == AppState::Paused)
-        m_player->stop();
+    m_player->stop();
 
-    stopDecoder();
     if (!m_tempPath.isEmpty() && m_isTemporary)
         QFile::remove(m_tempPath);
 
@@ -326,7 +292,6 @@ void MainWindow::clearDocument()
     m_timeLabel->setText(tr("00:00 / 00:00"));
     m_waveform->clear();
     m_liveRecordPeaks.clear();
-    m_player->setSource(QUrl());
     m_fileLabel->setText(tr("Untitled"));
     m_fileLabel->setToolTip({});
     updateWindowTitle();
@@ -357,46 +322,145 @@ bool MainWindow::maybeSave()
     return true;
 }
 
+void MainWindow::loadDocumentForPlayback(const QString &path)
+{
+    if (!m_player->load(path))
+        return;
+    // Peak extraction from path
+    {
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly)) {
+            file.read(12); // RIFF
+            qint64 dataOff = -1;
+            quint32 dataSz = 0;
+            QAudioFormat fmt;
+            while (!file.atEnd()) {
+                const QByteArray id = file.read(4);
+                const QByteArray szb = file.read(4);
+                if (id.size() < 4 || szb.size() < 4) break;
+                const quint32 sz = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(szb.constData()));
+                const qint64 pos = file.pos();
+                if (id == "fmt ") {
+                    QByteArray fmtb = file.read(qMin(sz, 32u));
+                    if (fmtb.size() >= 16) {
+                        const quint16 af = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData()));
+                        const quint16 ch = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 2));
+                        const quint32 sr = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(fmtb.constData() + 4));
+                        const quint16 bits = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 14));
+                        fmt.setChannelCount(ch);
+                        fmt.setSampleRate(int(sr));
+                        if (af == 1 && bits == 16) fmt.setSampleFormat(QAudioFormat::Int16);
+                        else if (af == 3 && bits == 32) fmt.setSampleFormat(QAudioFormat::Float);
+                        else if (af == 1 && bits == 8) fmt.setSampleFormat(QAudioFormat::UInt8);
+                        else if (af == 1 && bits == 32) fmt.setSampleFormat(QAudioFormat::Int32);
+                    }
+                    if (sz > 32) file.seek(pos + sz + (sz & 1));
+                } else if (id == "data") {
+                    dataOff = pos;
+                    dataSz = sz;
+                    break;
+                } else {
+                    file.seek(pos + sz + (sz & 1));
+                }
+            }
+            if (dataOff >= 0) {
+                file.seek(dataOff);
+                const QByteArray pcm = file.read(dataSz);
+                setWaveformFromPcm(pcm, fmt);
+            }
+        }
+    }
+}
+
+void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt)
+{
+    if (pcm.isEmpty() || fmt.sampleRate() <= 0) {
+        m_waveform->clear();
+        return;
+    }
+    const int bpf = fmt.bytesPerFrame();
+    if (bpf <= 0) {
+        m_waveform->clear();
+        return;
+    }
+    const int frames = pcm.size() / bpf;
+    const int target = 400;
+    QVector<float> peaks;
+    peaks.reserve(target);
+    const double step = double(frames) / target;
+    for (int i = 0; i < target; ++i) {
+        const int a = int(i * step);
+        const int b = qMin(int((i + 1) * step), frames);
+        float mx = 0.f;
+        for (int f = a; f < b; ++f) {
+            const char *frame = pcm.constData() + f * bpf;
+            float sample = 0.f;
+            switch (fmt.sampleFormat()) {
+            case QAudioFormat::Int16:
+                sample = qFromLittleEndian<qint16>(reinterpret_cast<const uchar *>(frame)) / 32768.f;
+                break;
+            case QAudioFormat::Float:
+                sample = *reinterpret_cast<const float *>(frame);
+                break;
+            case QAudioFormat::UInt8:
+                sample = (quint8(frame[0]) - 128) / 128.f;
+                break;
+            case QAudioFormat::Int32:
+                sample = qFromLittleEndian<qint32>(reinterpret_cast<const uchar *>(frame)) / 2147483648.f;
+                break;
+            default:
+                break;
+            }
+            mx = qMax(mx, qAbs(sample));
+        }
+        peaks.append(mx);
+    }
+    float g = 0.f;
+    for (float v : peaks) g = qMax(g, v);
+    if (g > 0.f) {
+        for (float &v : peaks) v /= g;
+    }
+    m_waveform->setPeaks(peaks);
+}
+
 void MainWindow::onNew()
 {
-    if (!maybeSave())
-        return;
+    if (!maybeSave()) return;
     clearDocument();
 }
 
 void MainWindow::onOpen()
 {
-    if (m_state == AppState::Recording)
-        return;
-    if (!maybeSave())
-        return;
+    if (m_state == AppState::Recording) return;
+    if (!maybeSave()) return;
 
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open Audio File"),
         QStandardPaths::writableLocation(QStandardPaths::MusicLocation),
-        tr("Audio Files (*.wav *.flac *.ogg *.mp3 *.m4a *.opus);;All Files (*)"));
-    if (path.isEmpty())
-        return;
+        tr("WAV Audio (*.wav);;All Files (*)"));
+    if (path.isEmpty()) return;
 
     clearDocument();
-    setDocumentPath(path, false);
-    stopDecoder();
-    m_player->setSource(QUrl::fromLocalFile(path));
-    loadWaveformFromDocument();
+    m_savedPath = path;
+    m_isTemporary = false;
+    m_tempPath.clear();
+    m_modified = false;
+    m_fileLabel->setText(QFileInfo(path).fileName());
+    m_fileLabel->setToolTip(path);
+    updateWindowTitle();
+    loadDocumentForPlayback(path);
     setAppState(AppState::Ready);
 }
 
 void MainWindow::onSave()
 {
-    if (!hasDocument() && m_tempPath.isEmpty())
-        return;
+    if (!hasDocument()) return;
     if (m_savedPath.isEmpty() || m_isTemporary) {
         onSaveAs();
         return;
     }
     if (!m_tempPath.isEmpty() && m_tempPath != m_savedPath) {
-        if (QFile::exists(m_savedPath))
-            QFile::remove(m_savedPath);
+        if (QFile::exists(m_savedPath)) QFile::remove(m_savedPath);
         if (!QFile::copy(m_tempPath, m_savedPath)) {
             QMessageBox::critical(this, tr("Error"), tr("Could not save to:\n%1").arg(m_savedPath));
             return;
@@ -416,18 +480,14 @@ void MainWindow::onSaveAs()
         this, tr("Save Recording As"),
         QStandardPaths::writableLocation(QStandardPaths::MusicLocation) + QStringLiteral("/recording.wav"),
         tr("WAV Audio (*.wav);;All Files (*)"));
-    if (path.isEmpty())
-        return;
+    if (path.isEmpty()) return;
 
-    QString source = m_tempPath;
-    if (source.isEmpty())
-        source = m_savedPath;
+    QString source = !m_tempPath.isEmpty() ? m_tempPath : m_savedPath;
     if (source.isEmpty() || !QFileInfo::exists(source)) {
         QMessageBox::warning(this, tr("Error"), tr("Nothing to save yet."));
         return;
     }
-    if (QFile::exists(path) && path != source)
-        QFile::remove(path);
+    if (QFile::exists(path) && path != source) QFile::remove(path);
     if (!QFile::copy(source, path)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not save to:\n%1").arg(path));
         return;
@@ -445,36 +505,25 @@ void MainWindow::onSaveAs()
     statusBar()->showMessage(tr("Saved"), 3000);
 }
 
-// ---- Transport ----
-
 void MainWindow::onRecord()
 {
     if (m_state == AppState::Recording) {
-        // Stop recording
         m_wavWriter.close();
         m_recordAction->setChecked(false);
 
         if (!m_liveRecordPeaks.isEmpty()) {
-            // Normalize and show the live-built waveform immediately
             float mx = 0.f;
-            for (float v : m_liveRecordPeaks)
-                mx = qMax(mx, v);
+            for (float v : m_liveRecordPeaks) mx = qMax(mx, v);
             QVector<float> peaks = m_liveRecordPeaks;
-            if (mx > 0.f) {
-                for (float &v : peaks)
-                    v /= mx;
-            }
+            if (mx > 0.f)
+                for (float &v : peaks) v /= mx;
             m_waveform->setPeaks(peaks);
         }
 
         if (!m_tempPath.isEmpty()) {
-            stopDecoder();
-            m_player->setSource(QUrl()); // clear first
-            m_player->setSource(QUrl::fromLocalFile(m_tempPath));
             m_fileLabel->setText(tr("Untitled (unsaved)"));
             m_fileLabel->setToolTip(m_tempPath);
-            // Also decode for a nicer peak display if live peaks were coarse
-            loadWaveformFromDocument();
+            loadDocumentForPlayback(m_tempPath);
         }
         setAppState(AppState::Ready);
         return;
@@ -483,7 +532,6 @@ void MainWindow::onRecord()
     if (m_state == AppState::Playing || m_state == AppState::Paused)
         m_player->stop();
 
-    // New temp file for this take (replaces previous unsaved content)
     if (!m_tempPath.isEmpty() && m_isTemporary)
         QFile::remove(m_tempPath);
 
@@ -499,17 +547,27 @@ void MainWindow::onRecord()
     m_isTemporary = true;
     m_savedPath.clear();
 
-    // Ensure audio source is running with a known format
-    if (!m_audioSource) {
+    if (!m_audioSource)
         startAudioSource();
+    if (!m_audioSource) {
+        QMessageBox::critical(this, tr("Error"), tr("No audio input available."));
+        m_recordAction->setChecked(false);
+        return;
+    }
+
+    // Force Int16 for reliable WAV
+    QAudioFormat fmt = m_audioSource->format();
+    if (fmt.sampleFormat() != QAudioFormat::Int16) {
+        // restart with Int16 if possible
+        stopAudioSource();
+        startAudioSource(); // will prefer Int16
         if (!m_audioSource) {
-            QMessageBox::critical(this, tr("Error"), tr("No audio input available."));
             m_recordAction->setChecked(false);
             return;
         }
+        fmt = m_audioSource->format();
     }
 
-    const QAudioFormat fmt = m_audioSource->format();
     if (!m_wavWriter.open(m_tempPath, fmt)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not open WAV file for writing."));
         m_recordAction->setChecked(false);
@@ -544,17 +602,16 @@ void MainWindow::onPlay()
     const QString path = documentPathForPlayback();
     if (path.isEmpty() || !QFileInfo::exists(path)) {
         QMessageBox::information(this, tr("QWavRec"),
-            tr("Nothing to play. Record something or open a file first."));
+            tr("Nothing to play. Record something or open a WAV file first."));
         m_playAction->setChecked(false);
         return;
     }
 
-    // Decoder must not hold the file while we play
-    stopDecoder();
-
-    if (m_player->source().toLocalFile() != path) {
-        m_player->setSource(QUrl());
-        m_player->setSource(QUrl::fromLocalFile(path));
+    if (m_player->path() != path) {
+        if (!m_player->load(path)) {
+            m_playAction->setChecked(false);
+            return;
+        }
     }
     m_player->play();
 }
@@ -563,17 +620,13 @@ void MainWindow::onAbout()
 {
     QMessageBox::about(this, tr("About QWavRec"),
         tr("<h3>QWavRec</h3>"
-           "<p>Simple PipeWire / PulseAudio player and recorder.</p>"
+           "<p>Simple audio player and recorder (WAV via QAudioSource / QAudioSink).</p>"
            "<p>Recordings stay temporary until you save them.</p>"
-           "<p><b>Note:</b> PulseAudio/PipeWire <i>monitor</i> sources "
-           "(e.g. “Monitor of Built-in Audio”) are intentionally hidden by "
-           "Qt Multimedia and cannot be listed here without using libpulse directly.</p>"
-           "<p>Version %1</p>"
-           "<p>License: GPL-3.0-or-later</p>")
+           "<p><b>Note:</b> PulseAudio monitor sources are hidden by Qt and are not listed. "
+           "Use <code>module-remap-source</code> as a workaround.</p>"
+           "<p>Version %1 · GPL-3.0-or-later</p>")
             .arg(QApplication::applicationVersion()));
 }
-
-// ---- Devices / volume ----
 
 void MainWindow::updateAudioDevices()
 {
@@ -617,9 +670,9 @@ void MainWindow::updateAudioDevices()
 
 void MainWindow::onInputDeviceChanged(int index)
 {
-    if (index < 0) return;
+    Q_UNUSED(index);
     if (m_state == AppState::Recording)
-        onRecord(); // stop first
+        onRecord();
     startAudioSource();
 }
 
@@ -629,7 +682,7 @@ void MainWindow::onOutputDeviceChanged(int index)
     const QByteArray id = m_outputCombo->itemData(index).toByteArray();
     for (const QAudioDevice &dev : QMediaDevices::audioOutputs()) {
         if (dev.id() == id) {
-            m_audioOutput->setDevice(dev);
+            m_player->setDevice(dev);
             break;
         }
     }
@@ -637,15 +690,13 @@ void MainWindow::onOutputDeviceChanged(int index)
 
 void MainWindow::onInputVolumeChanged(int value)
 {
-    m_micGain = value / 100.0; // 0..2
+    m_micGain = value / 100.0;
 }
 
 void MainWindow::onOutputVolumeChanged(int value)
 {
-    m_audioOutput->setVolume(value / 100.0);
+    m_player->setVolume(value / 100.0);
 }
-
-// ---- Capture ----
 
 void MainWindow::startAudioSource()
 {
@@ -662,19 +713,17 @@ void MainWindow::startAudioSource()
     if (device.isNull())
         return;
 
-    QAudioFormat format = device.preferredFormat();
-    // Prefer Int16 PCM for simple WAV writing
-    if (format.sampleFormat() != QAudioFormat::Int16
-        && format.sampleFormat() != QAudioFormat::Float) {
-        format.setSampleFormat(QAudioFormat::Int16);
-    }
-    if (format.sampleRate() <= 0)
-        format.setSampleRate(48000);
-    if (format.channelCount() <= 0)
-        format.setChannelCount(1);
-
+    QAudioFormat format;
+    format.setSampleFormat(QAudioFormat::Int16);
+    format.setSampleRate(48000);
+    format.setChannelCount(1);
     if (!device.isFormatSupported(format)) {
         format = device.preferredFormat();
+        // still prefer Int16 when possible
+        QAudioFormat try16 = format;
+        try16.setSampleFormat(QAudioFormat::Int16);
+        if (device.isFormatSupported(try16))
+            format = try16;
     }
 
     m_audioSource = new QAudioSource(device, format, this);
@@ -709,8 +758,7 @@ float MainWindow::processCaptureBuffer(QByteArray &data, const QAudioFormat &fmt
         auto *s = reinterpret_cast<float *>(data.data());
         const int n = data.size() / int(sizeof(float));
         for (int i = 0; i < n; ++i) {
-            float v = s[i] * float(m_micGain);
-            v = qBound(-1.f, v, 1.f);
+            float v = qBound(-1.f, s[i] * float(m_micGain), 1.f);
             peak = qMax(peak, qAbs(v));
             s[i] = v;
         }
@@ -728,92 +776,39 @@ void MainWindow::onAudioSourceReadyRead()
 
     const QAudioFormat fmt = m_audioSource->format();
     const float peak = processCaptureBuffer(data, fmt);
-
     m_inputMeter->setLevel(qreal(peak));
 
     if (m_state == AppState::Recording && m_wavWriter.isOpen()) {
         m_wavWriter.write(data.constData(), data.size());
         m_liveRecordPeaks.append(peak);
-        // Cap display peaks so the widget stays responsive on long takes
         if (m_liveRecordPeaks.size() > 800) {
             QVector<float> reduced;
             reduced.reserve(400);
-            for (int i = 0; i < 400; ++i) {
-                const int a = i * 2;
-                reduced.append(qMax(m_liveRecordPeaks[a], m_liveRecordPeaks[a + 1]));
-            }
+            for (int i = 0; i < 400; ++i)
+                reduced.append(qMax(m_liveRecordPeaks[i * 2], m_liveRecordPeaks[i * 2 + 1]));
             m_liveRecordPeaks = reduced;
         }
         m_waveform->setPeaks(m_liveRecordPeaks);
         m_timeLabel->setText(formatTime(m_recordTimer.elapsed()));
         m_duration = m_recordTimer.elapsed();
-    } else {
-        m_waveform->addLiveLevel(qreal(peak));
     }
+    // Idle: meter only — do NOT animate the waveform
 }
 
-void MainWindow::onAudioBufferReceived(const QAudioBuffer &buffer)
-{
-    if (m_state != AppState::Playing && m_state != AppState::Paused)
-        return;
-    m_outputMeter->setLevel(computeLevel(buffer));
-}
-
-qreal MainWindow::computeLevel(const QAudioBuffer &buffer) const
-{
-    if (!buffer.isValid() || buffer.sampleCount() == 0)
-        return 0.0;
-    const QAudioFormat fmt = buffer.format();
-    qreal sumSq = 0.0;
-    const int n = buffer.sampleCount();
-    if (fmt.sampleFormat() == QAudioFormat::Int16) {
-        const auto *s = buffer.constData<qint16>();
-        for (int i = 0; i < n; ++i) {
-            const qreal v = s[i] / 32768.0;
-            sumSq += v * v;
-        }
-    } else if (fmt.sampleFormat() == QAudioFormat::Float) {
-        const auto *s = buffer.constData<float>();
-        for (int i = 0; i < n; ++i)
-            sumSq += double(s[i]) * s[i];
-    } else
-        return 0.0;
-    return qMin(1.0, qSqrt(sumSq / n) * 2.5);
-}
-
-// ---- Player ----
-
-void MainWindow::onPositionChanged(qint64 position)
-{
-    if (!m_seeking && (m_state == AppState::Playing || m_state == AppState::Paused)) {
-        m_seekSlider->setValue(static_cast<int>(position));
-        updateTimeLabel();
-        if (m_duration > 0)
-            m_waveform->setPlaybackPosition(static_cast<qreal>(position) / m_duration);
-    }
-}
-
-void MainWindow::onDurationChanged(qint64 duration)
-{
-    m_duration = duration;
-    m_seekSlider->setRange(0, static_cast<int>(duration));
-    updateTimeLabel();
-}
-
-void MainWindow::onPlayerStateChanged(QMediaPlayer::PlaybackState state)
+void MainWindow::onPlayerStateChanged(WavPlayer::State state)
 {
     switch (state) {
-    case QMediaPlayer::PlayingState:
+    case WavPlayer::Playing:
         setAppState(AppState::Playing);
         m_playAction->setChecked(true);
         m_playAction->setIcon(style()->standardIcon(QStyle::SP_MediaPause));
         break;
-    case QMediaPlayer::PausedState:
+    case WavPlayer::Paused:
         setAppState(AppState::Paused);
         m_playAction->setChecked(true);
         m_playAction->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
         break;
-    case QMediaPlayer::StoppedState:
+    case WavPlayer::Stopped:
         if (m_state != AppState::Recording) {
             setAppState(AppState::Ready);
             m_playAction->setChecked(false);
@@ -827,10 +822,28 @@ void MainWindow::onPlayerStateChanged(QMediaPlayer::PlaybackState state)
     }
 }
 
-void MainWindow::onPlayerError(QMediaPlayer::Error, const QString &errorString)
+void MainWindow::onPlayerPosition(qint64 ms)
 {
-    QMessageBox::critical(this, tr("Playback Error"),
-                          tr("Could not play:\n%1").arg(errorString));
+    if (!m_seeking && (m_state == AppState::Playing || m_state == AppState::Paused)) {
+        m_seekSlider->setValue(static_cast<int>(ms));
+        updateTimeLabel();
+        if (m_duration > 0)
+            m_waveform->setPlaybackPosition(static_cast<qreal>(ms) / m_duration);
+        // Simple output level from position ticks is not available without a probe;
+        // leave output meter at last or zero.
+    }
+}
+
+void MainWindow::onPlayerDuration(qint64 ms)
+{
+    m_duration = ms;
+    m_seekSlider->setRange(0, static_cast<int>(ms));
+    updateTimeLabel();
+}
+
+void MainWindow::onPlayerError(const QString &msg)
+{
+    QMessageBox::critical(this, tr("Playback Error"), msg);
     m_playAction->setChecked(false);
     setAppState(AppState::Ready);
 }
@@ -838,96 +851,6 @@ void MainWindow::onPlayerError(QMediaPlayer::Error, const QString &errorString)
 void MainWindow::onSeek(int value)
 {
     m_player->setPosition(value);
-}
-
-// ---- Waveform decode (for opened files / refine after record) ----
-
-void MainWindow::stopDecoder()
-{
-    if (m_decoder) {
-        m_decoder->stop();
-        m_decoder->deleteLater();
-        m_decoder = nullptr;
-    }
-    m_decodePeaks.clear();
-}
-
-void MainWindow::loadWaveformFromDocument()
-{
-    stopDecoder();
-    const QString path = documentPathForPlayback();
-    if (path.isEmpty() || !QFileInfo::exists(path)) {
-        m_waveform->clear();
-        return;
-    }
-
-    m_decoder = new QAudioDecoder(this);
-    m_decoder->setSource(QUrl::fromLocalFile(path));
-    QAudioFormat fmt;
-    fmt.setSampleFormat(QAudioFormat::Float);
-    fmt.setSampleRate(8000);
-    fmt.setChannelCount(1);
-    m_decoder->setAudioFormat(fmt);
-
-    connect(m_decoder, &QAudioDecoder::bufferReady, this, &MainWindow::onDecoderBufferReady);
-    connect(m_decoder, &QAudioDecoder::finished, this, &MainWindow::onDecoderFinished);
-    connect(m_decoder, QOverload<QAudioDecoder::Error>::of(&QAudioDecoder::error),
-            this, [this](QAudioDecoder::Error) {
-                if (m_decoder) {
-                    m_decoder->deleteLater();
-                    m_decoder = nullptr;
-                }
-            });
-    m_decoder->start();
-}
-
-void MainWindow::onDecoderBufferReady()
-{
-    if (!m_decoder) return;
-    const QAudioBuffer buffer = m_decoder->read();
-    if (!buffer.isValid() || buffer.sampleCount() == 0)
-        return;
-    const float *samples = buffer.constData<float>();
-    const int n = buffer.sampleCount();
-    for (int i = 0; i < n; ++i)
-        m_decodePeaks.append(qAbs(samples[i]));
-}
-
-void MainWindow::onDecoderFinished()
-{
-    if (m_decodePeaks.isEmpty()) {
-        // keep whatever we already have
-    } else {
-        const int target = 400;
-        QVector<float> peaks;
-        if (m_decodePeaks.size() <= target) {
-            peaks = m_decodePeaks;
-        } else {
-            peaks.reserve(target);
-            const double step = double(m_decodePeaks.size()) / target;
-            for (int i = 0; i < target; ++i) {
-                const int start = int(i * step);
-                const int end = qMin(int((i + 1) * step), m_decodePeaks.size());
-                float mx = 0.f;
-                for (int j = start; j < end; ++j)
-                    mx = qMax(mx, m_decodePeaks[j]);
-                peaks.append(mx);
-            }
-        }
-        float mx = 0.f;
-        for (float v : peaks)
-            mx = qMax(mx, v);
-        if (mx > 0.f) {
-            for (float &v : peaks)
-                v /= mx;
-        }
-        m_waveform->setPeaks(peaks);
-    }
-    m_decodePeaks.clear();
-    if (m_decoder) {
-        m_decoder->deleteLater();
-        m_decoder = nullptr;
-    }
 }
 
 void MainWindow::setAppState(AppState state)

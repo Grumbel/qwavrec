@@ -6,16 +6,13 @@
 
 #include <QMainWindow>
 #include <QMediaDevices>
-#include <QMediaPlayer>
-#include <QAudioOutput>
 #include <QAudioSource>
-#include <QAudioBufferOutput>
-#include <QAudioDecoder>
 #include <QIODevice>
 #include <QVector>
 #include <QElapsedTimer>
 
 #include "wavwriter.h"
+#include "wavplayer.h"
 
 class QComboBox;
 class QLabel;
@@ -49,16 +46,13 @@ private slots:
     void onPlay();
     void onAbout();
 
-    void onPositionChanged(qint64 position);
-    void onDurationChanged(qint64 duration);
-    void onPlayerStateChanged(QMediaPlayer::PlaybackState state);
-    void onPlayerError(QMediaPlayer::Error error, const QString &errorString);
+    void onPlayerStateChanged(WavPlayer::State state);
+    void onPlayerPosition(qint64 ms);
+    void onPlayerDuration(qint64 ms);
+    void onPlayerError(const QString &msg);
     void onSeek(int value);
 
     void onAudioSourceReadyRead();
-    void onAudioBufferReceived(const QAudioBuffer &buffer);
-    void onDecoderBufferReady();
-    void onDecoderFinished();
 
 private:
     enum class AppState { Ready, Playing, Paused, Recording, Error };
@@ -75,19 +69,15 @@ private:
 
     void startAudioSource();
     void stopAudioSource();
-    qreal computeLevel(const QAudioBuffer &buffer) const;
+    float processCaptureBuffer(QByteArray &data, const QAudioFormat &fmt);
 
     bool maybeSave();
     void clearDocument();
-    void setDocumentPath(const QString &path, bool isTemporary);
     QString documentPathForPlayback() const;
     bool hasDocument() const;
     void markModified();
-    void loadWaveformFromDocument();
-    void stopDecoder();
-
-    // Apply mic gain (0..2) to Int16 buffer in-place; returns peak 0..1
-    float processCaptureBuffer(QByteArray &data, const QAudioFormat &fmt);
+    void loadDocumentForPlayback(const QString &path);
+    void setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt);
 
     QAction *m_newAction = nullptr;
     QAction *m_openAction = nullptr;
@@ -110,18 +100,14 @@ private:
     WaveformWidget *m_waveform = nullptr;
 
     QMediaDevices m_devices;
-    QMediaPlayer *m_player = nullptr;
-    QAudioOutput *m_audioOutput = nullptr;
-    QAudioBufferOutput *m_bufferOutput = nullptr;
+    WavPlayer *m_player = nullptr;
 
     QAudioSource *m_audioSource = nullptr;
     QIODevice *m_audioSourceDevice = nullptr;
     WavWriter m_wavWriter;
-    qreal m_micGain = 1.0; // 0..2
+    qreal m_micGain = 1.0;
 
-    QAudioDecoder *m_decoder = nullptr;
-    QVector<float> m_decodePeaks;
-    QVector<float> m_liveRecordPeaks; // built while recording
+    QVector<float> m_liveRecordPeaks;
 
     QString m_savedPath;
     QString m_tempPath;
