@@ -61,8 +61,12 @@ QString RecordingHistory::archiveTake(const QString &sourcePath)
 
     if (QFile::exists(dest))
         QFile::remove(dest);
-    if (!QFile::copy(sourcePath, dest))
-        return {};
+    // Prefer rename (same filesystem) — copy blocks the caller for large takes.
+    if (!QFile::rename(sourcePath, dest)) {
+        if (!QFile::copy(sourcePath, dest))
+            return {};
+        // copy leaves the source in place; rename would have moved it
+    }
 
     m_takes.append(dest);
     m_index = m_takes.size() - 1;

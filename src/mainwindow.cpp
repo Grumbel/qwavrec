@@ -583,50 +583,7 @@ void MainWindow::onSaveAs()
 void MainWindow::onRecord()
 {
     if (m_state == AppState::Recording) {
-        // Leave capture running for the meter. Only disable the PCM queue
-        // and flush whatever is already buffered — never sleep on the GUI thread.
-        m_capture->setRecording(false);
-        for (int i = 0; i < 3; ++i) {
-            const QByteArray rest = m_capture->takeRecordedAudio();
-            if (rest.isEmpty())
-                break;
-            if (m_wavWriter.isOpen())
-                m_wavWriter.write(rest.constData(), rest.size());
-        }
-        m_wavWriter.close();
-        m_recordAction->setChecked(false);
-
-        if (!m_liveRecordPeaks.isEmpty()) {
-            m_rawPeaks = m_liveRecordPeaks;
-            m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
-        }
-
-        setAppState(AppState::Ready);
-        m_monitoring = m_capture && m_capture->isRunning();
-
-        if (!m_tempPath.isEmpty()) {
-            QFileInfo fi(m_tempPath);
-            if (fi.size() < 44) {
-                QMessageBox::warning(this, tr("Recording"),
-                    tr("Recording produced no audio data."));
-                QFile::remove(m_tempPath);
-                m_tempPath.clear();
-            } else {
-                const QString archived = m_history.archiveTake(m_tempPath);
-                if (!archived.isEmpty()) {
-                    if (m_isTemporary)
-                        QFile::remove(m_tempPath);
-                    m_tempPath = archived;
-                    m_isTemporary = false;
-                    m_modified = true;
-                }
-                // Load for playback (may take a moment on long takes — do not
-                // processEvents here; that re-enters the meter timer).
-                loadDocumentForPlayback(m_tempPath);
-                statusBar()->showMessage(
-                    tr("Take saved to cache (%1)").arg(m_history.takes().size()), 4000);
-            }
-        }
+        finishRecordingStop();
         return;
     }
 
@@ -672,6 +629,7 @@ void MainWindow::onRecord()
     }
 
     m_liveRecordPeaks.clear();
+    m_recordPcm.clear();
     m_waveform->clear();
     m_recordTimer.restart();
     markModified();
@@ -682,6 +640,82 @@ void MainWindow::onRecord()
         statusBar()->showMessage(
             tr("Recording… (previous takes remain in cache, %1 total)")
                 .arg(m_history.takes().size()), 0);
+}
+
+
+void MainWindow::finishRecordingStop()
+{
+    // 1) Stop queuing PCM; keep capture stream for the input meter.
+    m_capture->setRecording(false);
+
+    // 2) Drain anything still in the capture queue (no sleeps).
+    for (int i = 0; i < 3; ++i) {
+        const QByteArray rest = m_capture->takeRecordedAudio();
+        if (rest.isEmpty())
+            break;
+        m_recordPcm.append(rest);
+        if (m_wavWriter.isOpen())
+            m_wavWriter.write(rest.constData(), rest.size());
+    }
+    m_wavWriter.close();
+    m_recordAction->setChecked(false);
+
+    // 3) Waveform from live peaks — no disk read.
+    if (!m_liveRecordPeaks.isEmpty()) {
+        m_rawPeaks = m_liveRecordPeaks;
+        m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+    }
+
+    // 4) Unlock UI immediately (this is what the user is waiting for).
+    setAppState(AppState::Ready);
+    m_monitoring = m_capture && m_capture->isRunning();
+
+    if (m_tempPath.isEmpty() || m_recordPcm.isEmpty()) {
+        if (!m_tempPath.isEmpty()) {
+            QFile::remove(m_tempPath);
+            m_tempPath.clear();
+        }
+        m_recordPcm.clear();
+        statusBar()->showMessage(tr("Recording produced no audio data."), 3000);
+        return;
+    }
+
+    // 5) Hand PCM to player from memory — no WavFile::load on the GUI thread.
+    QAudioFormat fmt;
+    fmt.setSampleFormat(QAudioFormat::Int16);
+    fmt.setSampleRate(48000);
+    fmt.setChannelCount(1);
+    m_player->loadPcm(m_recordPcm, fmt);
+    m_player->clearPlayRange();
+    m_waveform->clearSelection();
+    m_duration = m_player->duration();
+    m_seekSlider->setRange(0, int(m_duration));
+    updateTimeLabel();
+    updateWindowTitle();
+
+    // 6) Archive to cache on the next event-loop turn so the first paint of
+    //    "Ready" is not blocked by QFile::copy of the whole take.
+    const QString tempPath = m_tempPath;
+    const bool isTemp = m_isTemporary;
+    QTimer::singleShot(0, this, [this, tempPath, isTemp]() {
+        if (tempPath.isEmpty() || !QFileInfo::exists(tempPath))
+            return;
+        const QString archived = m_history.archiveTake(tempPath);
+        if (!archived.isEmpty()) {
+            if (isTemp)
+                QFile::remove(tempPath);
+            m_tempPath = archived;
+            m_isTemporary = false;
+            m_modified = true;
+            updateWindowTitle();
+            statusBar()->showMessage(
+                tr("Take saved to cache (%1)").arg(m_history.takes().size()), 4000);
+        } else {
+            statusBar()->showMessage(tr("Could not archive take to cache"), 4000);
+        }
+        // Drop in-memory PCM only after archive attempt (player still holds its copy)
+        m_recordPcm.clear();
+    });
 }
 
 void MainWindow::onPlay()
@@ -1106,6 +1140,7 @@ void MainWindow::onMeterTick()
     if (m_state == AppState::Recording && m_wavWriter.isOpen()) {
         const QByteArray pcm = m_capture->takeRecordedAudio();
         if (!pcm.isEmpty()) {
+            m_recordPcm.append(pcm);
             m_wavWriter.write(pcm.constData(), pcm.size());
             // Peak for live waveform (downsample: one sample per tick)
             float peak = 0.f;

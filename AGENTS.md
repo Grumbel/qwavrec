@@ -113,12 +113,17 @@ for (...) { processEvents(); QThread::msleep(10); }  // freezes GUI, re-entrancy
 **Right:**
 
 ```cpp
-capture->setRecording(false);    // stop queuing PCM; keep stream for meter
-// drain queue a few times without sleeping
-wavWriter.close();               // rewrite WAV sizes
-setAppState(Ready);
-// then archive + loadDocumentForPlayback (no processEvents in between)
+// finishRecordingStop():
+capture->setRecording(false);
+// drain queue into m_recordPcm + writer (no sleep)
+wavWriter.close();
+// peaks from m_liveRecordPeaks; player->loadPcm(m_recordPcm) — no disk read
+setAppState(Ready);              // unlock UI first
+QTimer::singleShot(0, archiveTake);  // QFile::copy off the critical path
 ```
+
+Never call `loadDocumentForPlayback` + `QFile::copy` synchronously on the
+record-stop path — that was the multi-second freeze after a take.
 
 - Leave the capture stream running for the input meter after stop.  
 - **Never `QThread::msleep` on the GUI thread.**  

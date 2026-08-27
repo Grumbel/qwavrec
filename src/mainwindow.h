@@ -84,6 +84,7 @@ private:
 
     void startMonitoring();
     void stopMonitoring();
+    void finishRecordingStop();
     void applySelectionToPlayer();
 
     bool maybeSave();
@@ -136,6 +137,7 @@ private:
 
     QVector<float> m_liveRecordPeaks;
     QVector<float> m_rawPeaks;
+    QByteArray m_recordPcm; // PCM accumulated during current take (GUI thread)
 
     QString m_savedPath;
     QString m_tempPath;
