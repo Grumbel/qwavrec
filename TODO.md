@@ -68,10 +68,11 @@ Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
   “Next take” and move under Transport or a Takes menu; free Ctrl+Z
   for real edit undo later.
 
-- [ ] **Record is checkable; Play is checkable; Stop is not**  
-  Mixed toggle semantics. Many recorders use momentary Record that
-  latches, or exclusive transport states (radio-like). Align icons
-  and checked state with a single transport state machine.
+- [x] **Record is checkable; Play is checkable; Stop is not**  
+  Play is checked only while *Playing* (pause icon); unchecked when
+  Paused/Stopped (play icon). Record stays available while paused or
+  playing (starts a new take after stopping playback). Stop ends
+  play/record and rewinds.
 
 - [ ] **Large transport buttons vs toolbar**  
   Record/Play/Stop only at the bottom; toolbar has New/Open/Save and

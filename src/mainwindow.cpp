@@ -213,7 +213,7 @@ void MainWindow::createActions()
 
     m_stopAction = new QAction(themeIcon(QStringLiteral("media-playback-stop"), QStyle::SP_MediaStop),
                                tr("Stop"), this);
-    m_stopAction->setStatusTip(tr("Stop playback and return to the start"));
+    m_stopAction->setStatusTip(tr("Stop playback or recording and return to the start"));
     m_stopAction->setShortcut(QKeySequence(Qt::Key_Escape));
     connect(m_stopAction, &QAction::triggered, this, &MainWindow::onStop);
 
@@ -725,23 +725,27 @@ void MainWindow::onPlay()
         return;
     }
     if (m_state == AppState::Playing) {
+        // Toggle → pause. Button is unchecked in onPlayerStateChanged(Paused).
         m_player->pause();
         return;
     }
     if (m_state == AppState::Paused) {
+        m_player->setSinkName(currentSinkName());
         m_player->play();
         return;
     }
 
+    // Ready / Error: start playback of the current document.
     const QString path = documentPathForPlayback();
     if (path.isEmpty() || !QFileInfo::exists(path)) {
-        QMessageBox::information(this, tr("QWavRec"),
-            tr("Nothing to play. Record something or open a WAV file first."));
-        m_playAction->setChecked(false);
-        return;
-    }
-
-    {
+        // In-memory PCM from a just-finished take may still be in the player.
+        if (m_player->duration() <= 0) {
+            QMessageBox::information(this, tr("QWavRec"),
+                tr("Nothing to play. Record something or open a WAV file first."));
+            m_playAction->setChecked(false);
+            return;
+        }
+    } else {
         const WavFile::Info info = WavFile::load(path);
         if (!info.ok) {
             QMessageBox::warning(this, tr("Play"), info.error);
@@ -749,6 +753,8 @@ void MainWindow::onPlay()
             return;
         }
         m_player->loadPcm(info.pcm, info.format);
+        m_player->clearPlayRange();
+        applySelectionToPlayer();
     }
     stopMonitoring();
     m_player->setSinkName(currentSinkName());
@@ -763,12 +769,13 @@ void MainWindow::onStop()
     }
     if (m_state == AppState::Playing || m_state == AppState::Paused) {
         if (m_player)
-        m_player->stop();
-    if (m_capture)
-        m_capture->stop();
+            m_player->stop();
+        // Leave capture running for the input meter (stop is non-blocking
+        // but restarting monitoring is unnecessary work and drops the meter).
         m_seekSlider->setValue(0);
         m_waveform->setPlaybackPosition(0.0);
         updateTimeLabel();
+        m_playAction->setChecked(false);
     }
 }
 
@@ -1207,19 +1214,26 @@ void MainWindow::onPlayerStateChanged(PulsePlayback::State state)
     switch (state) {
     case PulsePlayback::Playing:
         setAppState(AppState::Playing);
+        // Checked only while actually playing — pause must not look "latched".
         m_playAction->setChecked(true);
         m_playAction->setIcon(themeIcon(QStringLiteral("media-playback-pause"), QStyle::SP_MediaPause));
+        m_playAction->setText(tr("Pause"));
+        m_playAction->setStatusTip(tr("Pause playback"));
         break;
     case PulsePlayback::Paused:
         setAppState(AppState::Paused);
-        m_playAction->setChecked(true);
+        m_playAction->setChecked(false);
         m_playAction->setIcon(themeIcon(QStringLiteral("media-playback-start"), QStyle::SP_MediaPlay));
+        m_playAction->setText(tr("Play"));
+        m_playAction->setStatusTip(tr("Resume playback"));
         break;
     case PulsePlayback::Stopped:
         if (m_state != AppState::Recording) {
             setAppState(AppState::Ready);
             m_playAction->setChecked(false);
             m_playAction->setIcon(themeIcon(QStringLiteral("media-playback-start"), QStyle::SP_MediaPlay));
+            m_playAction->setText(tr("Play"));
+            m_playAction->setStatusTip(tr("Play or pause"));
             m_seekSlider->setValue(0);
             m_waveform->setPlaybackPosition(0.0);
             updateTimeLabel();
@@ -1285,25 +1299,30 @@ void MainWindow::setAppState(AppState state)
 void MainWindow::updateControls()
 {
     const bool ready = (m_state == AppState::Ready || m_state == AppState::Error);
-    const bool playing = (m_state == AppState::Playing || m_state == AppState::Paused);
+    const bool playing = (m_state == AppState::Playing);
+    const bool paused = (m_state == AppState::Paused);
     const bool recording = (m_state == AppState::Recording);
     const bool hasDoc = hasDocument();
+    // Idle-ish: can start a new take (record stops playback first if needed)
+    const bool canStartRecord = ready || playing || paused;
 
     // New/Open allowed whenever not recording (including while paused)
     m_newAction->setEnabled(!recording);
     m_openAction->setEnabled(!recording);
     m_saveAction->setEnabled(!recording && (m_modified || hasDoc));
     m_saveAsAction->setEnabled(!recording && hasDoc);
-    m_undoAction->setEnabled(ready && m_history.canPrevious());
-    m_redoAction->setEnabled(ready && m_history.canNext());
-    m_historyAction->setEnabled(ready);
-    m_normalizeAction->setEnabled(ready && hasDoc);
-    m_recordAction->setEnabled(ready || recording);
-    m_playAction->setEnabled((ready || playing) && hasDoc);
-    m_stopAction->setEnabled(playing || recording);
-    m_inputCombo->setEnabled(ready);
+    m_undoAction->setEnabled((ready || paused) && m_history.canPrevious());
+    m_redoAction->setEnabled((ready || paused) && m_history.canNext());
+    m_historyAction->setEnabled(ready || paused);
+    m_normalizeAction->setEnabled((ready || paused) && hasDoc);
+    // Record is a latch while recording; otherwise always available so pause
+    // cannot trap the user (starting record stops playback first).
+    m_recordAction->setEnabled(canStartRecord || recording);
+    m_playAction->setEnabled((ready || playing || paused) && hasDoc && !recording);
+    m_stopAction->setEnabled(playing || paused || recording);
+    m_inputCombo->setEnabled(ready || paused);
     m_outputCombo->setEnabled(!recording);
-    // Seek whenever a document is loaded (scrub before play)
+    // Seek whenever a document is loaded (scrub before/while paused play)
     m_seekSlider->setEnabled(hasDoc && !recording && m_duration > 0);
 }
 
