@@ -402,9 +402,10 @@ void MainWindow::createCentralWidget()
     mainLayout->addLayout(meterForm);
 
     m_waveform = new WaveformWidget;
-    m_waveform->setToolTip(tr("Drag near A or B to adjust edges.
-Drag elsewhere to select a new A–B region (limits play/loop).
-Click to seek. Double-click clears selection. Right-click for edit menu."));
+    m_waveform->setToolTip(tr(
+        "Drag near A or B to adjust edges.\n"
+        "Drag elsewhere to select a new A-B region (limits play/loop).\n"
+        "Click to seek. Double-click clears selection. Right-click for edit menu."));
     mainLayout->addWidget(m_waveform, 1);
 
     m_seekSlider = new QSlider(Qt::Horizontal);
