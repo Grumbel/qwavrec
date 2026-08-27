@@ -279,10 +279,6 @@ PulsePlayback::PulsePlayback(QObject *parent)
     : QObject(parent)
 {
 }
-// ctor cont
-
-{
-}
 
 PulsePlayback::~PulsePlayback()
 {
