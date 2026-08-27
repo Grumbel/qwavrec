@@ -4,6 +4,7 @@
 #include "mainwindow.h"
 #include "levelmeter.h"
 #include "waveformwidget.h"
+#include "recordinghistory.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -127,6 +128,16 @@ void MainWindow::createActions()
     m_saveAsAction->setShortcut(QKeySequence::SaveAs);
     connect(m_saveAsAction, &QAction::triggered, this, &MainWindow::onSaveAs);
 
+    m_undoAction = new QAction(style()->standardIcon(QStyle::SP_ArrowBack), tr("&Undo Take"), this);
+    m_undoAction->setShortcut(QKeySequence::Undo);
+    m_undoAction->setStatusTip(tr("Previous recording in cache history"));
+    connect(m_undoAction, &QAction::triggered, this, &MainWindow::onUndo);
+
+    m_redoAction = new QAction(style()->standardIcon(QStyle::SP_ArrowForward), tr("&Redo Take"), this);
+    m_redoAction->setShortcut(QKeySequence::Redo);
+    m_redoAction->setStatusTip(tr("Next recording in cache history"));
+    connect(m_redoAction, &QAction::triggered, this, &MainWindow::onRedo);
+
     m_quitAction = new QAction(tr("&Quit"), this);
     m_quitAction->setShortcut(QKeySequence::Quit);
     connect(m_quitAction, &QAction::triggered, this, &QWidget::close);
@@ -166,6 +177,9 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_saveAction);
     fileMenu->addAction(m_saveAsAction);
     fileMenu->addSeparator();
+    fileMenu->addAction(m_undoAction);
+    fileMenu->addAction(m_redoAction);
+    fileMenu->addSeparator();
     fileMenu->addAction(m_quitAction);
 
     QMenu *transportMenu = menuBar()->addMenu(tr("&Transport"));
@@ -185,8 +199,8 @@ void MainWindow::createToolBar()
     tb->addAction(m_openAction);
     tb->addAction(m_saveAction);
     tb->addSeparator();
-    tb->addAction(m_recordAction);
-    tb->addAction(m_playAction);
+    tb->addAction(m_undoAction);
+    tb->addAction(m_redoAction);
 }
 
 void MainWindow::createCentralWidget()
@@ -194,14 +208,6 @@ void MainWindow::createCentralWidget()
     auto *central = new QWidget(this);
     setCentralWidget(central);
     auto *mainLayout = new QVBoxLayout(central);
-
-    auto *fileRow = new QHBoxLayout;
-    fileRow->addWidget(new QLabel(tr("Document:")));
-    m_fileLabel = new QLabel(tr("Untitled"));
-    m_fileLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_fileLabel->setStyleSheet(QStringLiteral("QLabel { font-weight: bold; }"));
-    fileRow->addWidget(m_fileLabel, 1);
-    mainLayout->addLayout(fileRow);
 
     auto *deviceForm = new QFormLayout;
     m_inputCombo = new QComboBox;
@@ -292,8 +298,6 @@ void MainWindow::clearDocument()
     m_timeLabel->setText(tr("00:00 / 00:00"));
     m_waveform->clear();
     m_liveRecordPeaks.clear();
-    m_fileLabel->setText(tr("Untitled"));
-    m_fileLabel->setToolTip({});
     updateWindowTitle();
     setAppState(AppState::Ready);
 }
@@ -445,8 +449,6 @@ void MainWindow::onOpen()
     m_isTemporary = false;
     m_tempPath.clear();
     m_modified = false;
-    m_fileLabel->setText(QFileInfo(path).fileName());
-    m_fileLabel->setToolTip(path);
     updateWindowTitle();
     loadDocumentForPlayback(path);
     setAppState(AppState::Ready);
@@ -499,8 +501,6 @@ void MainWindow::onSaveAs()
     m_savedPath = path;
     m_isTemporary = false;
     m_modified = false;
-    m_fileLabel->setText(QFileInfo(path).fileName());
-    m_fileLabel->setToolTip(path);
     updateWindowTitle();
     statusBar()->showMessage(tr("Saved"), 3000);
 }
@@ -521,9 +521,19 @@ void MainWindow::onRecord()
         }
 
         if (!m_tempPath.isEmpty()) {
-            m_fileLabel->setText(tr("Untitled (unsaved)"));
-            m_fileLabel->setToolTip(m_tempPath);
+            // Archive every finished take under XDG cache
+            const QString archived = m_history.archiveTake(m_tempPath);
+            if (!archived.isEmpty()) {
+                // Point the document at the cache copy (stable path)
+                if (m_isTemporary)
+                    QFile::remove(m_tempPath);
+                m_tempPath = archived;
+                m_isTemporary = false; // cache file is durable
+                m_modified = true;     // not yet "saved" to a user location
+            }
             loadDocumentForPlayback(m_tempPath);
+            statusBar()->showMessage(
+                tr("Take saved to cache (%1)").arg(m_history.takes().size()), 4000);
         }
         setAppState(AppState::Ready);
         return;
@@ -577,8 +587,6 @@ void MainWindow::onRecord()
     m_liveRecordPeaks.clear();
     m_waveform->clear();
     m_recordTimer.restart();
-    m_fileLabel->setText(tr("Untitled (recording…)"));
-    m_fileLabel->setToolTip(m_tempPath);
     markModified();
     setAppState(AppState::Recording);
     m_recordAction->setChecked(true);
@@ -616,12 +624,50 @@ void MainWindow::onPlay()
     m_player->play();
 }
 
+void MainWindow::onUndo()
+{
+    if (m_state == AppState::Recording || m_state == AppState::Playing)
+        return;
+    const QString path = m_history.undo();
+    if (path.isEmpty())
+        return;
+    m_player->stop();
+    m_tempPath = path;
+    m_isTemporary = false;
+    m_savedPath.clear();
+    m_modified = true;
+    loadDocumentForPlayback(path);
+    updateWindowTitle();
+    setAppState(AppState::Ready);
+    statusBar()->showMessage(
+        tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size()), 3000);
+}
+
+void MainWindow::onRedo()
+{
+    if (m_state == AppState::Recording || m_state == AppState::Playing)
+        return;
+    const QString path = m_history.redo();
+    if (path.isEmpty())
+        return;
+    m_player->stop();
+    m_tempPath = path;
+    m_isTemporary = false;
+    m_savedPath.clear();
+    m_modified = true;
+    loadDocumentForPlayback(path);
+    updateWindowTitle();
+    setAppState(AppState::Ready);
+    statusBar()->showMessage(
+        tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size()), 3000);
+}
+
 void MainWindow::onAbout()
 {
     QMessageBox::about(this, tr("About QWavRec"),
         tr("<h3>QWavRec</h3>"
            "<p>Simple audio player and recorder (WAV via QAudioSource / QAudioSink).</p>"
-           "<p>Recordings stay temporary until you save them.</p>"
+           "<p>Every take is kept under the XDG cache (<code>~/.cache/qwavrec</code>); Undo/Redo steps through them. File → Save copies out of the cache.</p>"
            "<p><b>Note:</b> PulseAudio monitor sources are hidden by Qt and are not listed. "
            "Use <code>module-remap-source</code> as a workaround.</p>"
            "<p>Version %1 · GPL-3.0-or-later</p>")
@@ -876,6 +922,8 @@ void MainWindow::updateControls()
     m_openAction->setEnabled(ready);
     m_saveAction->setEnabled(ready && (m_modified || hasDocument()));
     m_saveAsAction->setEnabled(ready && hasDocument());
+    m_undoAction->setEnabled(ready && m_history.canUndo());
+    m_redoAction->setEnabled(ready && m_history.canRedo());
     m_recordAction->setEnabled(ready || recording);
     m_playAction->setEnabled((ready || playing) && hasDocument());
     m_inputCombo->setEnabled(ready);
@@ -893,8 +941,17 @@ void MainWindow::updateTimeLabel()
 
 void MainWindow::updateWindowTitle()
 {
-    QString name = m_savedPath.isEmpty() ? tr("Untitled") : QFileInfo(m_savedPath).fileName();
-    if (m_modified || m_isTemporary)
+    QString name;
+    if (!m_savedPath.isEmpty()) {
+        name = QFileInfo(m_savedPath).fileName();
+    } else if (!m_tempPath.isEmpty()) {
+        name = QFileInfo(m_tempPath).fileName();
+        if (m_history.takes().size() > 0 && m_history.currentIndex() >= 0)
+            name = tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size());
+    } else {
+        name = tr("Untitled");
+    }
+    if (m_modified)
         name += QChar(u'*');
     setWindowTitle(tr("%1 — QWavRec").arg(name));
 }

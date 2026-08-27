@@ -13,6 +13,7 @@
 
 #include "wavwriter.h"
 #include "wavplayer.h"
+#include "recordinghistory.h"
 
 class QComboBox;
 class QLabel;
@@ -45,6 +46,8 @@ private slots:
     void onRecord();
     void onPlay();
     void onAbout();
+    void onUndo();
+    void onRedo();
 
     void onPlayerStateChanged(WavPlayer::State state);
     void onPlayerPosition(qint64 ms);
@@ -87,8 +90,9 @@ private:
     QAction *m_recordAction = nullptr;
     QAction *m_playAction = nullptr;
     QAction *m_aboutAction = nullptr;
+    QAction *m_undoAction = nullptr;
+    QAction *m_redoAction = nullptr;
 
-    QLabel *m_fileLabel = nullptr;
     QComboBox *m_inputCombo = nullptr;
     QComboBox *m_outputCombo = nullptr;
     QSlider *m_inputVolumeSlider = nullptr;
@@ -101,6 +105,7 @@ private:
 
     QMediaDevices m_devices;
     WavPlayer *m_player = nullptr;
+    RecordingHistory m_history;
 
     QAudioSource *m_audioSource = nullptr;
     QIODevice *m_audioSourceDevice = nullptr;

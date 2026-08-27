@@ -24,6 +24,8 @@ qt_add_executable(qwavrec
     src/wavwriter.h
     src/wavplayer.cpp
     src/wavplayer.h
+    src/recordinghistory.cpp
+    src/recordinghistory.h
 )
 
 target_link_libraries(qwavrec PRIVATE
