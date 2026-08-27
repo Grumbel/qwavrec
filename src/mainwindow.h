@@ -81,6 +81,7 @@ private:
 
     void startAudioSource();
     void stopAudioSource();
+    void ensureInputMonitoring(bool on);
     float processCaptureBuffer(QByteArray &data, const QAudioFormat &fmt);
 
     bool maybeSave();

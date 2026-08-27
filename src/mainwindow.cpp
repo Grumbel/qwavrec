@@ -6,6 +6,7 @@
 #include "waveformwidget.h"
 #include "markedslider.h"
 #include "recordinghistory.h"
+#include "wavfile.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -443,48 +444,11 @@ QVector<float> MainWindow::normalizedPeaks(const QVector<float> &raw) const
 
 void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt)
 {
-    if (pcm.isEmpty() || fmt.sampleRate() <= 0) {
+    m_rawPeaks = WavFile::peaks(pcm, fmt, 400);
+    if (m_rawPeaks.isEmpty()) {
         m_waveform->clear();
         return;
     }
-    const int bpf = fmt.bytesPerFrame();
-    if (bpf <= 0) {
-        m_waveform->clear();
-        return;
-    }
-    const int frames = pcm.size() / bpf;
-    const int target = 400;
-    QVector<float> peaks;
-    peaks.reserve(target);
-    const double step = double(qMax(1, frames)) / target;
-    for (int i = 0; i < target; ++i) {
-        const int a = int(i * step);
-        const int b = qMin(int((i + 1) * step), frames);
-        float mx = 0.f;
-        for (int f = a; f < b; ++f) {
-            const char *frame = pcm.constData() + f * bpf;
-            float sample = 0.f;
-            switch (fmt.sampleFormat()) {
-            case QAudioFormat::Int16:
-                sample = qFromLittleEndian<qint16>(reinterpret_cast<const uchar *>(frame)) / 32768.f;
-                break;
-            case QAudioFormat::Float:
-                sample = *reinterpret_cast<const float *>(frame);
-                break;
-            case QAudioFormat::UInt8:
-                sample = (quint8(frame[0]) - 128) / 128.f;
-                break;
-            case QAudioFormat::Int32:
-                sample = qFromLittleEndian<qint32>(reinterpret_cast<const uchar *>(frame)) / 2147483648.f;
-                break;
-            default:
-                break;
-            }
-            mx = qMax(mx, qAbs(sample));
-        }
-        peaks.append(mx);
-    }
-    m_rawPeaks = peaks;
     m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
 }
 
@@ -492,47 +456,11 @@ void MainWindow::loadDocumentForPlayback(const QString &path)
 {
     if (!m_player->load(path))
         return;
-
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
-        return;
-    file.read(12);
-    qint64 dataOff = -1;
-    quint32 dataSz = 0;
-    QAudioFormat fmt;
-    while (!file.atEnd()) {
-        const QByteArray id = file.read(4);
-        const QByteArray szb = file.read(4);
-        if (id.size() < 4 || szb.size() < 4) break;
-        const quint32 sz = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(szb.constData()));
-        const qint64 pos = file.pos();
-        if (id == "fmt ") {
-            QByteArray fmtb = file.read(qMin(sz, 32u));
-            if (fmtb.size() >= 16) {
-                const quint16 af = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData()));
-                const quint16 ch = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 2));
-                const quint32 sr = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(fmtb.constData() + 4));
-                const quint16 bits = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 14));
-                fmt.setChannelCount(ch);
-                fmt.setSampleRate(int(sr));
-                if (af == 1 && bits == 16) fmt.setSampleFormat(QAudioFormat::Int16);
-                else if (af == 3 && bits == 32) fmt.setSampleFormat(QAudioFormat::Float);
-                else if (af == 1 && bits == 8) fmt.setSampleFormat(QAudioFormat::UInt8);
-                else if (af == 1 && bits == 32) fmt.setSampleFormat(QAudioFormat::Int32);
-            }
-            if (sz > 32) file.seek(pos + sz + (sz & 1));
-        } else if (id == "data") {
-            dataOff = pos;
-            dataSz = sz;
-            break;
-        } else {
-            file.seek(pos + sz + (sz & 1));
-        }
-    }
-    if (dataOff >= 0) {
-        file.seek(dataOff);
-        setWaveformFromPcm(file.read(dataSz), fmt);
-    }
+    const WavFile::Info info = WavFile::load(path);
+    if (info.ok)
+        setWaveformFromPcm(info.pcm, info.format);
+    else
+        m_waveform->clear();
 }
 
 void MainWindow::onNew()
@@ -730,6 +658,7 @@ void MainWindow::onPlay()
             return;
         }
     }
+    ensureInputMonitoring(false);
     m_player->play();
 }
 
@@ -772,85 +701,27 @@ bool MainWindow::normalizeCurrentFile()
     if (path.isEmpty())
         return false;
 
-    // Load via player to get PCM, or re-parse
-    if (m_player->path() != path && !m_player->load(path))
+    WavFile::Info info = WavFile::load(path);
+    if (!info.ok || info.format.sampleFormat() != QAudioFormat::Int16)
         return false;
 
-    // Re-read file and rewrite with gain
-    QFile in(path);
-    if (!in.open(QIODevice::ReadOnly))
-        return false;
-    const QByteArray all = in.readAll();
-    in.close();
-    if (all.size() < 44)
+    if (!WavFile::peakNormalizeInt16(info.pcm))
         return false;
 
-    // Find data chunk
-    int dataOff = -1;
-    quint32 dataSz = 0;
-    QAudioFormat fmt;
-    {
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly))
-            return false;
-        file.read(12);
-        while (!file.atEnd()) {
-            const QByteArray id = file.read(4);
-            const QByteArray szb = file.read(4);
-            if (id.size() < 4 || szb.size() < 4) break;
-            const quint32 sz = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(szb.constData()));
-            const qint64 pos = file.pos();
-            if (id == "fmt ") {
-                QByteArray fmtb = file.read(qMin(sz, 32u));
-                if (fmtb.size() >= 16) {
-                    const quint16 af = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData()));
-                    const quint16 ch = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 2));
-                    const quint32 sr = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(fmtb.constData() + 4));
-                    const quint16 bits = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 14));
-                    fmt.setChannelCount(ch);
-                    fmt.setSampleRate(int(sr));
-                    if (af == 1 && bits == 16) fmt.setSampleFormat(QAudioFormat::Int16);
-                    else if (af == 3) fmt.setSampleFormat(QAudioFormat::Float);
-                    else return false;
-                }
-                if (sz > 32) file.seek(pos + sz + (sz & 1));
-            } else if (id == "data") {
-                dataOff = int(pos);
-                dataSz = sz;
-                break;
-            } else {
-                file.seek(pos + sz + (sz & 1));
-            }
-        }
-    }
-    if (dataOff < 0 || dataSz == 0 || fmt.sampleFormat() != QAudioFormat::Int16)
-        return false;
-
-    QByteArray pcm = all.mid(dataOff, int(dataSz));
-    auto *s = reinterpret_cast<qint16 *>(pcm.data());
-    const int n = pcm.size() / 2;
-    int peak = 0;
-    for (int i = 0; i < n; ++i)
-        peak = qMax(peak, qAbs(int(s[i])));
-    if (peak <= 0 || peak >= 32767)
-        return true; // already maxed or silent
-
-    const double gain = 32767.0 / peak;
-    for (int i = 0; i < n; ++i) {
-        const int v = int(qRound(s[i] * gain));
-        s[i] = qint16(qBound(-32768, v, 32767));
-    }
-
-    QByteArray out = all;
-    out.replace(dataOff, int(dataSz), pcm);
-
-    // Write to a new temp, then archive / replace
+    // Rewrite file via WavWriter
     QTemporaryFile tmp(QDir::temp().filePath(QStringLiteral("qwavrec-norm-XXXXXX.wav")));
     tmp.setAutoRemove(false);
     if (!tmp.open())
         return false;
-    tmp.write(out);
     tmp.close();
+
+    WavWriter writer;
+    if (!writer.open(tmp.fileName(), info.format)) {
+        QFile::remove(tmp.fileName());
+        return false;
+    }
+    writer.write(info.pcm.constData(), info.pcm.size());
+    writer.close();
 
     const QString archived = m_history.archiveTake(tmp.fileName());
     QFile::remove(tmp.fileName());
@@ -1064,6 +935,19 @@ void MainWindow::stopAudioSource()
         m_audioSource = nullptr;
         m_audioSourceDevice = nullptr;
     }
+    m_inputMeter->setLevel(0.0);
+}
+
+void MainWindow::ensureInputMonitoring(bool on)
+{
+    if (on) {
+        if (!m_audioSource)
+            startAudioSource();
+    } else {
+        // Keep capture open while recording
+        if (m_state != AppState::Recording)
+            stopAudioSource();
+    }
 }
 
 float MainWindow::processCaptureBuffer(QByteArray &data, const QAudioFormat &fmt)
@@ -1141,6 +1025,7 @@ void MainWindow::onPlayerStateChanged(WavPlayer::State state)
             m_waveform->setPlaybackPosition(0.0);
             updateTimeLabel();
             m_outputMeter->setLevel(0.0);
+            ensureInputMonitoring(true);
         }
         break;
     }
@@ -1236,13 +1121,13 @@ void MainWindow::updateWindowTitle()
         name = QFileInfo(m_savedPath).fileName();
     } else if (!m_tempPath.isEmpty()) {
         if (m_history.takes().size() > 0 && m_history.currentIndex() >= 0)
-            name = tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size());
+            name = tr("Take %1/%2 (cache)").arg(m_history.currentIndex() + 1).arg(m_history.takes().size());
         else
-            name = QFileInfo(m_tempPath).fileName();
+            name = tr("Unexported take");
     } else {
         name = tr("Untitled");
     }
-    if (m_modified)
+    if (m_modified && m_savedPath.isEmpty())
         name += QChar(u'*');
     setWindowTitle(tr("%1 — QWavRec").arg(name));
 }

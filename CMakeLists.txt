@@ -22,6 +22,8 @@ qt_add_executable(qwavrec
     src/waveformwidget.h
     src/wavwriter.cpp
     src/wavwriter.h
+    src/wavfile.cpp
+    src/wavfile.h
     src/wavplayer.cpp
     src/wavplayer.h
     src/recordinghistory.cpp

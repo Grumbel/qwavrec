@@ -39,7 +39,7 @@ combo. About text already mentions this; a short note is shown under the Input d
 
 Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
 
-- [ ] **Document model is hard to explain**  
+- [x] **Document model is hard to explain** (title: Take N/M (cache) / Unexported take / file name)  
   “Untitled / Take N/M / cache path / modified*” mixes three concepts:
   ephemeral take, durable cache archive, and user-saved file. Window
   title alone is not enough for “where is my file?”. Prefer a clearer
@@ -120,7 +120,7 @@ Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
   format may be stereo/float and WAV headers follow that — OK, but
   channel count >1 is not reflected in the UI.
 
-- [ ] **Input monitor vs exclusive device**  
+- [x] **Input monitor vs exclusive device** (capture released while playing; restarted when idle)  
   Capture stream stays open for metering while idle. Some devices /
   Bluetooth profiles dislike always-on capture; may block other apps
   or fail to start record. Consider starting the source only when
@@ -160,7 +160,7 @@ document paths, history, normalize, and WAV peak extraction.
   load/save/maybeSave, and history pointer belong together — not in
   the widget.
 
-- [ ] **Extract peak analysis**  
+- [x] **Extract peak analysis** (`WavFile` helpers for load/peaks/normalize)  
   `setWaveformFromPcm` and normalize’s WAV walk duplicate header
   parsing already done in `WavPlayer` / `WavWriter`. One
   `WavFile::{read,write,peaks,normalize}` helper.
