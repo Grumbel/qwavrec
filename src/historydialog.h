@@ -25,7 +25,6 @@ public:
 private slots:
     void onLoad();
     void onDelete();
-    void onSelectionChanged();
 
 private:
     void refreshDetails();
