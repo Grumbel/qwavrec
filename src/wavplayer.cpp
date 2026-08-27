@@ -225,6 +225,11 @@ void WavPlayer::setVolume(qreal volume)
         m_sink->setVolume(m_volume);
 }
 
+void WavPlayer::setLoop(bool loop)
+{
+    m_loop = loop;
+}
+
 void WavPlayer::setDevice(const QAudioDevice &device)
 {
     const bool wasPlaying = (m_state == Playing);
@@ -263,7 +268,15 @@ void WavPlayer::setState(State s)
 void WavPlayer::onSinkStateChanged(QAudio::State state)
 {
     if (state == QAudio::IdleState && m_state == Playing) {
-        // Finished playing
+        if (m_loop && !m_pcm.isEmpty()) {
+            m_pauseOffset = 0;
+            m_buffer.close();
+            m_buffer.setData(m_pcm);
+            m_buffer.open(QIODevice::ReadOnly);
+            m_sink->start(&m_buffer);
+            emit positionChanged(0);
+            return;
+        }
         m_posTimer.stop();
         m_pauseOffset = 0;
         setState(Stopped);

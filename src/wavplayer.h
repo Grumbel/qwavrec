@@ -32,6 +32,8 @@ public:
     void setPosition(qint64 ms);
     void setVolume(qreal volume); // 0..1
     void setDevice(const QAudioDevice &device);
+    void setLoop(bool loop);
+    bool loop() const { return m_loop; }
 
     State state() const { return m_state; }
     qint64 position() const;
@@ -67,6 +69,7 @@ private:
     qint64 m_durationMs = 0;
     qreal m_volume = 0.8;
     qint64 m_pauseOffset = 0; // bytes into pcm when paused
+    bool m_loop = false;
 };
 
 #endif

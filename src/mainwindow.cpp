@@ -4,6 +4,7 @@
 #include "mainwindow.h"
 #include "levelmeter.h"
 #include "waveformwidget.h"
+#include "markedslider.h"
 #include "recordinghistory.h"
 
 #include <QVBoxLayout>
@@ -34,6 +35,7 @@
 #include <QKeySequence>
 #include <QCloseEvent>
 #include <QTemporaryFile>
+#include <QSettings>
 #include <QtMath>
 #include <QtEndian>
 
@@ -41,7 +43,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setWindowTitle(tr("QWavRec"));
-    setMinimumSize(520, 440);
+    setMinimumSize(520, 460);
 
     QIcon appIcon = QIcon::fromTheme(QStringLiteral("qwavrec"));
     if (appIcon.isNull())
@@ -82,9 +84,8 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
 
+    loadSettings();
     updateAudioDevices();
-    m_inputVolumeSlider->setValue(100);
-    m_outputVolumeSlider->setValue(80);
     setAppState(AppState::Ready);
     startAudioSource();
     updateWindowTitle();
@@ -92,6 +93,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    saveSettings();
     if (m_state == AppState::Recording)
         onRecord();
     stopAudioSource();
@@ -102,48 +104,59 @@ MainWindow::~MainWindow()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    saveSettings();
     if (maybeSave())
         event->accept();
     else
         event->ignore();
 }
 
+QIcon MainWindow::themeIcon(const QString &name, QStyle::StandardPixmap fallback) const
+{
+    QIcon icon = QIcon::fromTheme(name);
+    if (icon.isNull())
+        icon = style()->standardIcon(fallback);
+    return icon;
+}
+
 void MainWindow::createActions()
 {
-    const QStyle *s = style();
-
-    m_newAction = new QAction(s->standardIcon(QStyle::SP_FileIcon), tr("&New"), this);
+    m_newAction = new QAction(themeIcon(QStringLiteral("document-new"), QStyle::SP_FileIcon),
+                              tr("&New"), this);
     m_newAction->setShortcut(QKeySequence::New);
     connect(m_newAction, &QAction::triggered, this, &MainWindow::onNew);
 
-    m_openAction = new QAction(s->standardIcon(QStyle::SP_DialogOpenButton), tr("&Open…"), this);
+    m_openAction = new QAction(themeIcon(QStringLiteral("document-open"), QStyle::SP_DialogOpenButton),
+                               tr("&Open…"), this);
     m_openAction->setShortcut(QKeySequence::Open);
     connect(m_openAction, &QAction::triggered, this, &MainWindow::onOpen);
 
-    m_saveAction = new QAction(s->standardIcon(QStyle::SP_DialogSaveButton), tr("&Save"), this);
+    m_saveAction = new QAction(themeIcon(QStringLiteral("document-save"), QStyle::SP_DialogSaveButton),
+                               tr("&Save"), this);
     m_saveAction->setShortcut(QKeySequence::Save);
     connect(m_saveAction, &QAction::triggered, this, &MainWindow::onSave);
 
-    m_saveAsAction = new QAction(tr("Save &As…"), this);
+    m_saveAsAction = new QAction(themeIcon(QStringLiteral("document-save-as"), QStyle::SP_DialogSaveButton),
+                                 tr("Save &As…"), this);
     m_saveAsAction->setShortcut(QKeySequence::SaveAs);
     connect(m_saveAsAction, &QAction::triggered, this, &MainWindow::onSaveAs);
 
-    m_undoAction = new QAction(style()->standardIcon(QStyle::SP_ArrowBack), tr("&Undo Take"), this);
+    m_undoAction = new QAction(themeIcon(QStringLiteral("edit-undo"), QStyle::SP_ArrowBack),
+                               tr("&Undo Take"), this);
     m_undoAction->setShortcut(QKeySequence::Undo);
-    m_undoAction->setStatusTip(tr("Previous recording in cache history"));
     connect(m_undoAction, &QAction::triggered, this, &MainWindow::onUndo);
 
-    m_redoAction = new QAction(style()->standardIcon(QStyle::SP_ArrowForward), tr("&Redo Take"), this);
+    m_redoAction = new QAction(themeIcon(QStringLiteral("edit-redo"), QStyle::SP_ArrowForward),
+                               tr("&Redo Take"), this);
     m_redoAction->setShortcut(QKeySequence::Redo);
-    m_redoAction->setStatusTip(tr("Next recording in cache history"));
     connect(m_redoAction, &QAction::triggered, this, &MainWindow::onRedo);
 
-    m_quitAction = new QAction(tr("&Quit"), this);
+    m_quitAction = new QAction(themeIcon(QStringLiteral("application-exit"), QStyle::SP_DialogCloseButton),
+                               tr("&Quit"), this);
     m_quitAction->setShortcut(QKeySequence::Quit);
     connect(m_quitAction, &QAction::triggered, this, &QWidget::close);
 
-    m_recordAction = new QAction(tr("Record"), this);
-    m_recordAction->setStatusTip(tr("Start or stop recording"));
+    // Record: red circle (no good freedesktop standard)
     {
         QPixmap pix(48, 48);
         pix.fill(Qt::transparent);
@@ -155,15 +168,36 @@ void MainWindow::createActions()
         painter.setBrush(QColor(230, 50, 50));
         painter.setPen(Qt::NoPen);
         painter.drawEllipse(14, 14, 20, 20);
-        m_recordAction->setIcon(QIcon(pix));
+        m_recordAction = new QAction(QIcon(pix), tr("Record"), this);
     }
+    m_recordAction->setStatusTip(tr("Start or stop recording"));
     m_recordAction->setCheckable(true);
+    m_recordAction->setShortcut(QKeySequence(Qt::Key_R));
     connect(m_recordAction, &QAction::triggered, this, &MainWindow::onRecord);
 
-    m_playAction = new QAction(s->standardIcon(QStyle::SP_MediaPlay), tr("Play"), this);
+    m_playAction = new QAction(themeIcon(QStringLiteral("media-playback-start"), QStyle::SP_MediaPlay),
+                               tr("Play"), this);
     m_playAction->setStatusTip(tr("Play or pause"));
     m_playAction->setCheckable(true);
+    m_playAction->setShortcut(QKeySequence(Qt::Key_Space));
     connect(m_playAction, &QAction::triggered, this, &MainWindow::onPlay);
+
+    m_stopAction = new QAction(themeIcon(QStringLiteral("media-playback-stop"), QStyle::SP_MediaStop),
+                               tr("Stop"), this);
+    m_stopAction->setStatusTip(tr("Stop playback and return to the start"));
+    m_stopAction->setShortcut(QKeySequence(Qt::Key_Escape));
+    connect(m_stopAction, &QAction::triggered, this, &MainWindow::onStop);
+
+    m_normalizeAction = new QAction(themeIcon(QStringLiteral("audio-volume-high"), QStyle::SP_MediaVolume),
+                                    tr("&Normalize"), this);
+    m_normalizeAction->setStatusTip(tr("Peak-normalize the current recording without clipping"));
+    connect(m_normalizeAction, &QAction::triggered, this, &MainWindow::onNormalize);
+
+    m_loopAction = new QAction(themeIcon(QStringLiteral("media-playlist-repeat"), QStyle::SP_BrowserReload),
+                               tr("Loop"), this);
+    m_loopAction->setStatusTip(tr("Repeat playback"));
+    m_loopAction->setCheckable(true);
+    connect(m_loopAction, &QAction::toggled, this, &MainWindow::onLoopToggled);
 
     m_aboutAction = new QAction(tr("&About QWavRec"), this);
     connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAbout);
@@ -182,9 +216,15 @@ void MainWindow::createMenus()
     fileMenu->addSeparator();
     fileMenu->addAction(m_quitAction);
 
+    QMenu *editMenu = menuBar()->addMenu(tr("&Edit"));
+    editMenu->addAction(m_normalizeAction);
+
     QMenu *transportMenu = menuBar()->addMenu(tr("&Transport"));
     transportMenu->addAction(m_recordAction);
     transportMenu->addAction(m_playAction);
+    transportMenu->addAction(m_stopAction);
+    transportMenu->addSeparator();
+    transportMenu->addAction(m_loopAction);
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(m_aboutAction);
@@ -201,6 +241,9 @@ void MainWindow::createToolBar()
     tb->addSeparator();
     tb->addAction(m_undoAction);
     tb->addAction(m_redoAction);
+    tb->addSeparator();
+    tb->addAction(m_normalizeAction);
+    tb->addAction(m_loopAction);
 }
 
 void MainWindow::createCentralWidget()
@@ -217,13 +260,19 @@ void MainWindow::createCentralWidget()
     mainLayout->addLayout(deviceForm);
 
     auto *volForm = new QFormLayout;
-    m_inputVolumeSlider = new QSlider(Qt::Horizontal);
-    m_inputVolumeSlider->setRange(0, 200);
-    m_inputVolumeSlider->setToolTip(tr("Microphone gain (100% = unity, 200% = boost)"));
+    m_inputVolumeSlider = new MarkedSlider(Qt::Horizontal);
+    m_inputVolumeSlider->setRange(0, 300); // 0..3×
+    m_inputVolumeSlider->setMarkerValue(100); // unity
+    m_inputVolumeSlider->setToolTip(tr("Microphone gain — yellow mark is unity (100%). Above = boost."));
+    m_micGainLabel = new QLabel(tr("100%"));
+    m_micGainLabel->setMinimumWidth(48);
+    auto *micRow = new QHBoxLayout;
+    micRow->addWidget(m_inputVolumeSlider, 1);
+    micRow->addWidget(m_micGainLabel);
     m_outputVolumeSlider = new QSlider(Qt::Horizontal);
     m_outputVolumeSlider->setRange(0, 100);
     m_outputVolumeSlider->setToolTip(tr("Playback volume"));
-    volForm->addRow(tr("Mic gain"), m_inputVolumeSlider);
+    volForm->addRow(tr("Mic gain"), micRow);
     volForm->addRow(tr("Playback volume"), m_outputVolumeSlider);
     mainLayout->addLayout(volForm);
 
@@ -246,23 +295,54 @@ void MainWindow::createCentralWidget()
     mainLayout->addWidget(m_timeLabel);
 
     auto *buttonLayout = new QHBoxLayout;
-    buttonLayout->setSpacing(16);
+    buttonLayout->setSpacing(12);
     auto makeBig = [](QAction *a) {
         auto *btn = new QToolButton;
         btn->setDefaultAction(a);
         btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-        btn->setIconSize(QSize(56, 56));
-        btn->setMinimumSize(88, 88);
+        btn->setIconSize(QSize(48, 48));
+        btn->setMinimumSize(80, 80);
         btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         return btn;
     };
     buttonLayout->addStretch();
     buttonLayout->addWidget(makeBig(m_recordAction));
     buttonLayout->addWidget(makeBig(m_playAction));
+    buttonLayout->addWidget(makeBig(m_stopAction));
     buttonLayout->addStretch();
     mainLayout->addLayout(buttonLayout);
 
     statusBar()->showMessage(tr("Ready"));
+}
+
+void MainWindow::loadSettings()
+{
+    QSettings s;
+    m_pendingInputId = s.value(QStringLiteral("audio/inputId")).toString();
+    m_pendingOutputId = s.value(QStringLiteral("audio/outputId")).toString();
+    const int mic = s.value(QStringLiteral("audio/micGain"), 100).toInt();
+    const int out = s.value(QStringLiteral("audio/playbackVolume"), 80).toInt();
+    const bool loop = s.value(QStringLiteral("playback/loop"), false).toBool();
+
+    m_restoringSettings = true;
+    m_inputVolumeSlider->setValue(qBound(0, mic, 300));
+    m_outputVolumeSlider->setValue(qBound(0, out, 100));
+    m_loopAction->setChecked(loop);
+    m_player->setLoop(loop);
+    m_restoringSettings = false;
+    updateMicGainLabel();
+}
+
+void MainWindow::saveSettings()
+{
+    QSettings s;
+    if (m_inputCombo->currentIndex() >= 0)
+        s.setValue(QStringLiteral("audio/inputId"), m_inputCombo->currentData().toByteArray());
+    if (m_outputCombo->currentIndex() >= 0)
+        s.setValue(QStringLiteral("audio/outputId"), m_outputCombo->currentData().toByteArray());
+    s.setValue(QStringLiteral("audio/micGain"), m_inputVolumeSlider->value());
+    s.setValue(QStringLiteral("audio/playbackVolume"), m_outputVolumeSlider->value());
+    s.setValue(QStringLiteral("playback/loop"), m_loopAction->isChecked());
 }
 
 bool MainWindow::hasDocument() const
@@ -326,54 +406,17 @@ bool MainWindow::maybeSave()
     return true;
 }
 
-void MainWindow::loadDocumentForPlayback(const QString &path)
+QVector<float> MainWindow::normalizedPeaks(const QVector<float> &raw) const
 {
-    if (!m_player->load(path))
-        return;
-    // Peak extraction from path
-    {
-        QFile file(path);
-        if (file.open(QIODevice::ReadOnly)) {
-            file.read(12); // RIFF
-            qint64 dataOff = -1;
-            quint32 dataSz = 0;
-            QAudioFormat fmt;
-            while (!file.atEnd()) {
-                const QByteArray id = file.read(4);
-                const QByteArray szb = file.read(4);
-                if (id.size() < 4 || szb.size() < 4) break;
-                const quint32 sz = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(szb.constData()));
-                const qint64 pos = file.pos();
-                if (id == "fmt ") {
-                    QByteArray fmtb = file.read(qMin(sz, 32u));
-                    if (fmtb.size() >= 16) {
-                        const quint16 af = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData()));
-                        const quint16 ch = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 2));
-                        const quint32 sr = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(fmtb.constData() + 4));
-                        const quint16 bits = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 14));
-                        fmt.setChannelCount(ch);
-                        fmt.setSampleRate(int(sr));
-                        if (af == 1 && bits == 16) fmt.setSampleFormat(QAudioFormat::Int16);
-                        else if (af == 3 && bits == 32) fmt.setSampleFormat(QAudioFormat::Float);
-                        else if (af == 1 && bits == 8) fmt.setSampleFormat(QAudioFormat::UInt8);
-                        else if (af == 1 && bits == 32) fmt.setSampleFormat(QAudioFormat::Int32);
-                    }
-                    if (sz > 32) file.seek(pos + sz + (sz & 1));
-                } else if (id == "data") {
-                    dataOff = pos;
-                    dataSz = sz;
-                    break;
-                } else {
-                    file.seek(pos + sz + (sz & 1));
-                }
-            }
-            if (dataOff >= 0) {
-                file.seek(dataOff);
-                const QByteArray pcm = file.read(dataSz);
-                setWaveformFromPcm(pcm, fmt);
-            }
-        }
+    QVector<float> peaks = raw;
+    float mx = 0.f;
+    for (float v : peaks)
+        mx = qMax(mx, v);
+    if (mx > 1e-6f) {
+        for (float &v : peaks)
+            v /= mx;
     }
+    return peaks;
 }
 
 void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt)
@@ -391,7 +434,7 @@ void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &f
     const int target = 400;
     QVector<float> peaks;
     peaks.reserve(target);
-    const double step = double(frames) / target;
+    const double step = double(qMax(1, frames)) / target;
     for (int i = 0; i < target; ++i) {
         const int a = int(i * step);
         const int b = qMin(int((i + 1) * step), frames);
@@ -419,30 +462,82 @@ void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &f
         }
         peaks.append(mx);
     }
-    float g = 0.f;
-    for (float v : peaks) g = qMax(g, v);
-    if (g > 0.f) {
-        for (float &v : peaks) v /= g;
+    m_waveform->setPeaks(normalizedPeaks(peaks));
+}
+
+void MainWindow::loadDocumentForPlayback(const QString &path)
+{
+    if (!m_player->load(path))
+        return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+    file.read(12);
+    qint64 dataOff = -1;
+    quint32 dataSz = 0;
+    QAudioFormat fmt;
+    while (!file.atEnd()) {
+        const QByteArray id = file.read(4);
+        const QByteArray szb = file.read(4);
+        if (id.size() < 4 || szb.size() < 4) break;
+        const quint32 sz = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(szb.constData()));
+        const qint64 pos = file.pos();
+        if (id == "fmt ") {
+            QByteArray fmtb = file.read(qMin(sz, 32u));
+            if (fmtb.size() >= 16) {
+                const quint16 af = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData()));
+                const quint16 ch = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 2));
+                const quint32 sr = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(fmtb.constData() + 4));
+                const quint16 bits = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 14));
+                fmt.setChannelCount(ch);
+                fmt.setSampleRate(int(sr));
+                if (af == 1 && bits == 16) fmt.setSampleFormat(QAudioFormat::Int16);
+                else if (af == 3 && bits == 32) fmt.setSampleFormat(QAudioFormat::Float);
+                else if (af == 1 && bits == 8) fmt.setSampleFormat(QAudioFormat::UInt8);
+                else if (af == 1 && bits == 32) fmt.setSampleFormat(QAudioFormat::Int32);
+            }
+            if (sz > 32) file.seek(pos + sz + (sz & 1));
+        } else if (id == "data") {
+            dataOff = pos;
+            dataSz = sz;
+            break;
+        } else {
+            file.seek(pos + sz + (sz & 1));
+        }
     }
-    m_waveform->setPeaks(peaks);
+    if (dataOff >= 0) {
+        file.seek(dataOff);
+        setWaveformFromPcm(file.read(dataSz), fmt);
+    }
 }
 
 void MainWindow::onNew()
 {
-    if (!maybeSave()) return;
+    if (m_state == AppState::Recording)
+        return;
+    if (m_state == AppState::Playing || m_state == AppState::Paused)
+        m_player->stop();
+    if (!maybeSave())
+        return;
     clearDocument();
 }
 
 void MainWindow::onOpen()
 {
-    if (m_state == AppState::Recording) return;
-    if (!maybeSave()) return;
+    if (m_state == AppState::Recording)
+        return;
+    if (m_state == AppState::Playing || m_state == AppState::Paused)
+        m_player->stop();
+    if (!maybeSave())
+        return;
 
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open Audio File"),
         QStandardPaths::writableLocation(QStandardPaths::MusicLocation),
         tr("WAV Audio (*.wav);;All Files (*)"));
-    if (path.isEmpty()) return;
+    if (path.isEmpty())
+        return;
 
     clearDocument();
     m_savedPath = path;
@@ -456,18 +551,21 @@ void MainWindow::onOpen()
 
 void MainWindow::onSave()
 {
-    if (!hasDocument()) return;
-    if (m_savedPath.isEmpty() || m_isTemporary) {
+    if (!hasDocument())
+        return;
+    if (m_savedPath.isEmpty() || m_isTemporary || m_tempPath.startsWith(m_history.cacheDir())) {
         onSaveAs();
         return;
     }
     if (!m_tempPath.isEmpty() && m_tempPath != m_savedPath) {
-        if (QFile::exists(m_savedPath)) QFile::remove(m_savedPath);
+        if (QFile::exists(m_savedPath))
+            QFile::remove(m_savedPath);
         if (!QFile::copy(m_tempPath, m_savedPath)) {
             QMessageBox::critical(this, tr("Error"), tr("Could not save to:\n%1").arg(m_savedPath));
             return;
         }
-        QFile::remove(m_tempPath);
+        if (m_isTemporary)
+            QFile::remove(m_tempPath);
         m_tempPath.clear();
         m_isTemporary = false;
     }
@@ -482,14 +580,16 @@ void MainWindow::onSaveAs()
         this, tr("Save Recording As"),
         QStandardPaths::writableLocation(QStandardPaths::MusicLocation) + QStringLiteral("/recording.wav"),
         tr("WAV Audio (*.wav);;All Files (*)"));
-    if (path.isEmpty()) return;
+    if (path.isEmpty())
+        return;
 
     QString source = !m_tempPath.isEmpty() ? m_tempPath : m_savedPath;
     if (source.isEmpty() || !QFileInfo::exists(source)) {
         QMessageBox::warning(this, tr("Error"), tr("Nothing to save yet."));
         return;
     }
-    if (QFile::exists(path) && path != source) QFile::remove(path);
+    if (QFile::exists(path) && path != source)
+        QFile::remove(path);
     if (!QFile::copy(source, path)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not save to:\n%1").arg(path));
         return;
@@ -511,25 +611,17 @@ void MainWindow::onRecord()
         m_wavWriter.close();
         m_recordAction->setChecked(false);
 
-        if (!m_liveRecordPeaks.isEmpty()) {
-            float mx = 0.f;
-            for (float v : m_liveRecordPeaks) mx = qMax(mx, v);
-            QVector<float> peaks = m_liveRecordPeaks;
-            if (mx > 0.f)
-                for (float &v : peaks) v /= mx;
-            m_waveform->setPeaks(peaks);
-        }
+        if (!m_liveRecordPeaks.isEmpty())
+            m_waveform->setPeaks(normalizedPeaks(m_liveRecordPeaks));
 
         if (!m_tempPath.isEmpty()) {
-            // Archive every finished take under XDG cache
             const QString archived = m_history.archiveTake(m_tempPath);
             if (!archived.isEmpty()) {
-                // Point the document at the cache copy (stable path)
                 if (m_isTemporary)
                     QFile::remove(m_tempPath);
                 m_tempPath = archived;
-                m_isTemporary = false; // cache file is durable
-                m_modified = true;     // not yet "saved" to a user location
+                m_isTemporary = false;
+                m_modified = true;
             }
             loadDocumentForPlayback(m_tempPath);
             statusBar()->showMessage(
@@ -565,19 +657,7 @@ void MainWindow::onRecord()
         return;
     }
 
-    // Force Int16 for reliable WAV
-    QAudioFormat fmt = m_audioSource->format();
-    if (fmt.sampleFormat() != QAudioFormat::Int16) {
-        // restart with Int16 if possible
-        stopAudioSource();
-        startAudioSource(); // will prefer Int16
-        if (!m_audioSource) {
-            m_recordAction->setChecked(false);
-            return;
-        }
-        fmt = m_audioSource->format();
-    }
-
+    const QAudioFormat fmt = m_audioSource->format();
     if (!m_wavWriter.open(m_tempPath, fmt)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not open WAV file for writing."));
         m_recordAction->setChecked(false);
@@ -624,14 +704,147 @@ void MainWindow::onPlay()
     m_player->play();
 }
 
-void MainWindow::onUndo()
+void MainWindow::onStop()
+{
+    if (m_state == AppState::Recording) {
+        onRecord(); // stop recording
+        return;
+    }
+    if (m_state == AppState::Playing || m_state == AppState::Paused) {
+        m_player->stop();
+        m_seekSlider->setValue(0);
+        m_waveform->setPlaybackPosition(0.0);
+        updateTimeLabel();
+    }
+}
+
+void MainWindow::onNormalize()
 {
     if (m_state == AppState::Recording || m_state == AppState::Playing)
         return;
+    if (!hasDocument()) {
+        QMessageBox::information(this, tr("QWavRec"), tr("Nothing to normalize."));
+        return;
+    }
+    if (normalizeCurrentFile()) {
+        loadDocumentForPlayback(documentPathForPlayback());
+        markModified();
+        statusBar()->showMessage(tr("Normalized to peak"), 3000);
+    }
+}
+
+bool MainWindow::normalizeCurrentFile()
+{
+    const QString path = documentPathForPlayback();
+    if (path.isEmpty())
+        return false;
+
+    // Load via player to get PCM, or re-parse
+    if (m_player->path() != path && !m_player->load(path))
+        return false;
+
+    // Re-read file and rewrite with gain
+    QFile in(path);
+    if (!in.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray all = in.readAll();
+    in.close();
+    if (all.size() < 44)
+        return false;
+
+    // Find data chunk
+    int dataOff = -1;
+    quint32 dataSz = 0;
+    QAudioFormat fmt;
+    {
+        QFile file(path);
+        file.open(QIODevice::ReadOnly);
+        file.read(12);
+        while (!file.atEnd()) {
+            const QByteArray id = file.read(4);
+            const QByteArray szb = file.read(4);
+            if (id.size() < 4 || szb.size() < 4) break;
+            const quint32 sz = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(szb.constData()));
+            const qint64 pos = file.pos();
+            if (id == "fmt ") {
+                QByteArray fmtb = file.read(qMin(sz, 32u));
+                if (fmtb.size() >= 16) {
+                    const quint16 af = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData()));
+                    const quint16 ch = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 2));
+                    const quint32 sr = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(fmtb.constData() + 4));
+                    const quint16 bits = qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(fmtb.constData() + 14));
+                    fmt.setChannelCount(ch);
+                    fmt.setSampleRate(int(sr));
+                    if (af == 1 && bits == 16) fmt.setSampleFormat(QAudioFormat::Int16);
+                    else if (af == 3) fmt.setSampleFormat(QAudioFormat::Float);
+                    else return false;
+                }
+                if (sz > 32) file.seek(pos + sz + (sz & 1));
+            } else if (id == "data") {
+                dataOff = int(pos);
+                dataSz = sz;
+                break;
+            } else {
+                file.seek(pos + sz + (sz & 1));
+            }
+        }
+    }
+    if (dataOff < 0 || dataSz == 0 || fmt.sampleFormat() != QAudioFormat::Int16)
+        return false;
+
+    QByteArray pcm = all.mid(dataOff, int(dataSz));
+    auto *s = reinterpret_cast<qint16 *>(pcm.data());
+    const int n = pcm.size() / 2;
+    int peak = 0;
+    for (int i = 0; i < n; ++i)
+        peak = qMax(peak, qAbs(int(s[i])));
+    if (peak <= 0 || peak >= 32767)
+        return true; // already maxed or silent
+
+    const double gain = 32767.0 / peak;
+    for (int i = 0; i < n; ++i) {
+        const int v = int(qRound(s[i] * gain));
+        s[i] = qint16(qBound(-32768, v, 32767));
+    }
+
+    QByteArray out = all;
+    out.replace(dataOff, int(dataSz), pcm);
+
+    // Write to a new temp, then archive / replace
+    QTemporaryFile tmp(QDir::temp().filePath(QStringLiteral("qwavrec-norm-XXXXXX.wav")));
+    tmp.setAutoRemove(false);
+    if (!tmp.open())
+        return false;
+    tmp.write(out);
+    tmp.close();
+
+    const QString archived = m_history.archiveTake(tmp.fileName());
+    QFile::remove(tmp.fileName());
+    if (archived.isEmpty())
+        return false;
+
+    m_tempPath = archived;
+    m_isTemporary = false;
+    m_savedPath.clear();
+    return true;
+}
+
+void MainWindow::onLoopToggled(bool on)
+{
+    m_player->setLoop(on);
+    if (!m_restoringSettings)
+        saveSettings();
+}
+
+void MainWindow::onUndo()
+{
+    if (m_state == AppState::Recording)
+        return;
+    if (m_state == AppState::Playing || m_state == AppState::Paused)
+        m_player->stop();
     const QString path = m_history.undo();
     if (path.isEmpty())
         return;
-    m_player->stop();
     m_tempPath = path;
     m_isTemporary = false;
     m_savedPath.clear();
@@ -645,12 +858,13 @@ void MainWindow::onUndo()
 
 void MainWindow::onRedo()
 {
-    if (m_state == AppState::Recording || m_state == AppState::Playing)
+    if (m_state == AppState::Recording)
         return;
+    if (m_state == AppState::Playing || m_state == AppState::Paused)
+        m_player->stop();
     const QString path = m_history.redo();
     if (path.isEmpty())
         return;
-    m_player->stop();
     m_tempPath = path;
     m_isTemporary = false;
     m_savedPath.clear();
@@ -666,20 +880,20 @@ void MainWindow::onAbout()
 {
     QMessageBox::about(this, tr("About QWavRec"),
         tr("<h3>QWavRec</h3>"
-           "<p>Simple audio player and recorder (WAV via QAudioSource / QAudioSink).</p>"
-           "<p>Every take is kept under the XDG cache (<code>~/.cache/qwavrec</code>); Undo/Redo steps through them. File → Save copies out of the cache.</p>"
-           "<p><b>Note:</b> PulseAudio monitor sources are hidden by Qt and are not listed. "
-           "Use <code>module-remap-source</code> as a workaround.</p>"
+           "<p>Simple WAV recorder/player (QAudioSource / QAudioSink).</p>"
+           "<p>Takes are archived under <code>~/.cache/qwavrec</code>. "
+           "Undo/Redo steps through them. Normalize peak-scales without clipping.</p>"
            "<p>Version %1 · GPL-3.0-or-later</p>")
             .arg(QApplication::applicationVersion()));
 }
 
 void MainWindow::updateAudioDevices()
 {
-    QByteArray curIn, curOut;
-    if (m_inputCombo->currentIndex() >= 0)
+    QByteArray curIn = m_pendingInputId.toUtf8();
+    QByteArray curOut = m_pendingOutputId.toUtf8();
+    if (curIn.isEmpty() && m_inputCombo->currentIndex() >= 0)
         curIn = m_inputCombo->currentData().toByteArray();
-    if (m_outputCombo->currentIndex() >= 0)
+    if (curOut.isEmpty() && m_outputCombo->currentIndex() >= 0)
         curOut = m_outputCombo->currentData().toByteArray();
 
     m_inputCombo->blockSignals(true);
@@ -712,6 +926,8 @@ void MainWindow::updateAudioDevices()
     }
     m_inputCombo->blockSignals(false);
     m_outputCombo->blockSignals(false);
+    m_pendingInputId.clear();
+    m_pendingOutputId.clear();
 }
 
 void MainWindow::onInputDeviceChanged(int index)
@@ -720,6 +936,8 @@ void MainWindow::onInputDeviceChanged(int index)
     if (m_state == AppState::Recording)
         onRecord();
     startAudioSource();
+    if (!m_restoringSettings)
+        saveSettings();
 }
 
 void MainWindow::onOutputDeviceChanged(int index)
@@ -732,22 +950,40 @@ void MainWindow::onOutputDeviceChanged(int index)
             break;
         }
     }
+    if (!m_restoringSettings)
+        saveSettings();
 }
 
 void MainWindow::onInputVolumeChanged(int value)
 {
     m_micGain = value / 100.0;
+    updateMicGainLabel();
+    if (!m_restoringSettings)
+        saveSettings();
 }
 
 void MainWindow::onOutputVolumeChanged(int value)
 {
     m_player->setVolume(value / 100.0);
+    if (!m_restoringSettings)
+        saveSettings();
+}
+
+void MainWindow::updateMicGainLabel()
+{
+    const int v = m_inputVolumeSlider->value();
+    if (v > 100)
+        m_micGainLabel->setText(tr("%1% ↑").arg(v));
+    else
+        m_micGainLabel->setText(tr("%1%").arg(v));
+    m_micGainLabel->setStyleSheet(v > 100
+        ? QStringLiteral("color: #c0392b; font-weight: bold;")
+        : QString());
 }
 
 void MainWindow::startAudioSource()
 {
     stopAudioSource();
-
     QAudioDevice device;
     if (m_inputCombo->currentIndex() >= 0) {
         const QByteArray id = m_inputCombo->currentData().toByteArray();
@@ -765,7 +1001,6 @@ void MainWindow::startAudioSource()
     format.setChannelCount(1);
     if (!device.isFormatSupported(format)) {
         format = device.preferredFormat();
-        // still prefer Int16 when possible
         QAudioFormat try16 = format;
         try16.setSampleFormat(QAudioFormat::Int16);
         if (device.isFormatSupported(try16))
@@ -834,11 +1069,11 @@ void MainWindow::onAudioSourceReadyRead()
                 reduced.append(qMax(m_liveRecordPeaks[i * 2], m_liveRecordPeaks[i * 2 + 1]));
             m_liveRecordPeaks = reduced;
         }
-        m_waveform->setPeaks(m_liveRecordPeaks);
+        // Normalize for display so quiet takes still fill the widget
+        m_waveform->setPeaks(normalizedPeaks(m_liveRecordPeaks));
         m_timeLabel->setText(formatTime(m_recordTimer.elapsed()));
         m_duration = m_recordTimer.elapsed();
     }
-    // Idle: meter only — do NOT animate the waveform
 }
 
 void MainWindow::onPlayerStateChanged(WavPlayer::State state)
@@ -847,18 +1082,18 @@ void MainWindow::onPlayerStateChanged(WavPlayer::State state)
     case WavPlayer::Playing:
         setAppState(AppState::Playing);
         m_playAction->setChecked(true);
-        m_playAction->setIcon(style()->standardIcon(QStyle::SP_MediaPause));
+        m_playAction->setIcon(themeIcon(QStringLiteral("media-playback-pause"), QStyle::SP_MediaPause));
         break;
     case WavPlayer::Paused:
         setAppState(AppState::Paused);
         m_playAction->setChecked(true);
-        m_playAction->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+        m_playAction->setIcon(themeIcon(QStringLiteral("media-playback-start"), QStyle::SP_MediaPlay));
         break;
     case WavPlayer::Stopped:
         if (m_state != AppState::Recording) {
             setAppState(AppState::Ready);
             m_playAction->setChecked(false);
-            m_playAction->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+            m_playAction->setIcon(themeIcon(QStringLiteral("media-playback-start"), QStyle::SP_MediaPlay));
             m_seekSlider->setValue(0);
             m_waveform->setPlaybackPosition(0.0);
             updateTimeLabel();
@@ -875,8 +1110,6 @@ void MainWindow::onPlayerPosition(qint64 ms)
         updateTimeLabel();
         if (m_duration > 0)
             m_waveform->setPlaybackPosition(static_cast<qreal>(ms) / m_duration);
-        // Simple output level from position ticks is not available without a probe;
-        // leave output meter at last or zero.
     }
 }
 
@@ -897,6 +1130,9 @@ void MainWindow::onPlayerError(const QString &msg)
 void MainWindow::onSeek(int value)
 {
     m_player->setPosition(value);
+    if (m_duration > 0)
+        m_waveform->setPlaybackPosition(static_cast<qreal>(value) / m_duration);
+    updateTimeLabel();
 }
 
 void MainWindow::setAppState(AppState state)
@@ -917,18 +1153,23 @@ void MainWindow::updateControls()
     const bool ready = (m_state == AppState::Ready || m_state == AppState::Error);
     const bool playing = (m_state == AppState::Playing || m_state == AppState::Paused);
     const bool recording = (m_state == AppState::Recording);
+    const bool hasDoc = hasDocument();
 
-    m_newAction->setEnabled(ready);
-    m_openAction->setEnabled(ready);
-    m_saveAction->setEnabled(ready && (m_modified || hasDocument()));
-    m_saveAsAction->setEnabled(ready && hasDocument());
+    // New/Open allowed whenever not recording (including while paused)
+    m_newAction->setEnabled(!recording);
+    m_openAction->setEnabled(!recording);
+    m_saveAction->setEnabled(!recording && (m_modified || hasDoc));
+    m_saveAsAction->setEnabled(!recording && hasDoc);
     m_undoAction->setEnabled(ready && m_history.canUndo());
     m_redoAction->setEnabled(ready && m_history.canRedo());
+    m_normalizeAction->setEnabled(ready && hasDoc);
     m_recordAction->setEnabled(ready || recording);
-    m_playAction->setEnabled((ready || playing) && hasDocument());
+    m_playAction->setEnabled((ready || playing) && hasDoc);
+    m_stopAction->setEnabled(playing || recording);
     m_inputCombo->setEnabled(ready);
-    m_outputCombo->setEnabled(ready || playing);
-    m_seekSlider->setEnabled(playing);
+    m_outputCombo->setEnabled(!recording);
+    // Seek whenever a document is loaded (scrub before play)
+    m_seekSlider->setEnabled(hasDoc && !recording && m_duration > 0);
 }
 
 void MainWindow::updateTimeLabel()
@@ -945,9 +1186,10 @@ void MainWindow::updateWindowTitle()
     if (!m_savedPath.isEmpty()) {
         name = QFileInfo(m_savedPath).fileName();
     } else if (!m_tempPath.isEmpty()) {
-        name = QFileInfo(m_tempPath).fileName();
         if (m_history.takes().size() > 0 && m_history.currentIndex() >= 0)
             name = tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size());
+        else
+            name = QFileInfo(m_tempPath).fileName();
     } else {
         name = tr("Untitled");
     }

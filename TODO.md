@@ -2,41 +2,30 @@
 
 ## Done
 
-- [x] Qt Widgets main window with menu + toolbar
-- [x] Input / Output device dropdowns with hot-plug
-- [x] Document model: record into temporary file until explicit Save
-- [x] File → New / Open / Save / Save As
-- [x] Record and Play as toggles
-- [x] Icon-only large transport buttons
-- [x] Status bar only
-- [x] Playback volume + mic gain (0..200%, default 100%)
-- [x] Recording via QAudioSource + WAV writer (reliable length, live peaks)
-- [x] Live waveform while recording; static document waveform with playhead after
-- [x] Seek slider and time display
-- [x] Application icon (old-school SVG)
+- [x] Qt Widgets UI with menu + toolbar
+- [x] Device selectors with hot-plug; settings persisted across sessions
+- [x] Document model + XDG cache history with Undo/Redo
+- [x] Record / Play / Pause / Stop; loop toggle
+- [x] Mic gain 0–300% with unity marker; playback volume
+- [x] Live normalized waveform while recording; static peaks after
+- [x] Peak Normalize action (no clipping)
+- [x] Low-level WAV capture (QAudioSource) and playback (QAudioSink)
+- [x] Theme icons with QStyle fallbacks
 
-## Known limitations
+## Feature requests
 
-- [ ] PulseAudio/PipeWire *monitor* sources are filtered out by Qt Multimedia
-      (since Qt 6.4). Listing them requires libpulse / PipeWire API, not planned
-      for the thin Qt-only client. Workaround: `pactl load-module module-remap-source`.
-
-## Feature requests / Nice to have
-
-- [ ] True in-RAM sample buffer (instead of temp file)
+- [ ] Select and cut sections of the recording
 - [ ] Append successive recordings into one document
+- [ ] True in-RAM sample buffer (instead of temp/cache files)
 - [ ] Peak-hold / clip indicators on meters
-- [ ] Remember last devices, volumes and directories
-- [ ] More recording formats
-- [ ] Keyboard shortcuts (Space = play/pause, R = record)
+- [ ] Open non-WAV formats (decode to WAV for editing)
+- [ ] PulseAudio monitor sources (needs libpulse; Qt hides them)
 - [ ] Drag-and-drop of audio files
 - [ ] Man page / translations
 
 ## Non-goals
 
-- Waveform editor / destructive editing
-- Effects / filters / EQ
-- Playlist or media library
-- Mixer / PipeWire patchbay
-- Multi-track recording
-- Metadata tagging UI
+- Waveform editor / multi-track DAW features
+- Effects / EQ / filters beyond normalize
+- Playlist / media library
+- PipeWire patchbay / mixer

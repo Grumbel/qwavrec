@@ -26,6 +26,8 @@ qt_add_executable(qwavrec
     src/wavplayer.h
     src/recordinghistory.cpp
     src/recordinghistory.h
+    src/markedslider.cpp
+    src/markedslider.h
 )
 
 target_link_libraries(qwavrec PRIVATE

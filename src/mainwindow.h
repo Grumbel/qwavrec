@@ -21,6 +21,7 @@ class QSlider;
 class QAction;
 class LevelMeter;
 class WaveformWidget;
+class MarkedSlider;
 
 class MainWindow : public QMainWindow
 {
@@ -45,6 +46,9 @@ private slots:
     void onSaveAs();
     void onRecord();
     void onPlay();
+    void onStop();
+    void onNormalize();
+    void onLoopToggled(bool on);
     void onAbout();
     void onUndo();
     void onRedo();
@@ -68,7 +72,9 @@ private:
     void updateControls();
     void updateTimeLabel();
     void updateWindowTitle();
+    void updateMicGainLabel();
     QString formatTime(qint64 ms) const;
+    QIcon themeIcon(const QString &name, QStyle::StandardPixmap fallback) const;
 
     void startAudioSource();
     void stopAudioSource();
@@ -81,6 +87,11 @@ private:
     void markModified();
     void loadDocumentForPlayback(const QString &path);
     void setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt);
+    QVector<float> normalizedPeaks(const QVector<float> &raw) const;
+
+    void loadSettings();
+    void saveSettings();
+    bool normalizeCurrentFile();
 
     QAction *m_newAction = nullptr;
     QAction *m_openAction = nullptr;
@@ -89,13 +100,17 @@ private:
     QAction *m_quitAction = nullptr;
     QAction *m_recordAction = nullptr;
     QAction *m_playAction = nullptr;
+    QAction *m_stopAction = nullptr;
+    QAction *m_normalizeAction = nullptr;
+    QAction *m_loopAction = nullptr;
     QAction *m_aboutAction = nullptr;
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
 
     QComboBox *m_inputCombo = nullptr;
     QComboBox *m_outputCombo = nullptr;
-    QSlider *m_inputVolumeSlider = nullptr;
+    MarkedSlider *m_inputVolumeSlider = nullptr;
+    QLabel *m_micGainLabel = nullptr;
     QSlider *m_outputVolumeSlider = nullptr;
     QSlider *m_seekSlider = nullptr;
     QLabel *m_timeLabel = nullptr;
@@ -123,6 +138,10 @@ private:
     qint64 m_duration = 0;
     bool m_seeking = false;
     QElapsedTimer m_recordTimer;
+
+    QString m_pendingInputId;
+    QString m_pendingOutputId;
+    bool m_restoringSettings = false;
 };
 
 #endif
