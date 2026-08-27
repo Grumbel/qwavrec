@@ -25,6 +25,8 @@
 #include <QAction>
 #include <QToolButton>
 #include <QStatusBar>
+#include <QDockWidget>
+#include <QListWidget>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QStandardPaths>
@@ -59,6 +61,24 @@ MainWindow::MainWindow(QWidget *parent)
     createMenus();
     createToolBar();
     createCentralWidget();
+
+    m_takesPanel = new TakesPanel(this);
+    m_takesPanel->setCacheDir(m_history.cacheDir());
+    m_takesDock = new QDockWidget(tr("Takes"), this);
+    m_takesDock->setObjectName(QStringLiteral("TakesDock"));
+    m_takesDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    m_takesDock->setWidget(m_takesPanel);
+    m_takesDock->setMinimumWidth(220);
+    addDockWidget(Qt::RightDockWidgetArea, m_takesDock);
+    m_takesDock->hide();
+    connect(m_takesDock, &QDockWidget::visibilityChanged, this, [this](bool vis) {
+        if (m_historyAction)
+            m_historyAction->setChecked(vis);
+        if (vis)
+            refreshTakesPanel();
+    });
+    connect(m_takesPanel, &TakesPanel::loadRequested, this, &MainWindow::onTakesLoadRequested);
+    connect(m_takesPanel, &TakesPanel::deleteRequested, this, &MainWindow::onTakesDeleteRequested);
 
     m_player = new PulsePlayback(this);
     connect(m_player, &PulsePlayback::stateChanged, this, &MainWindow::onPlayerStateChanged);
@@ -175,10 +195,11 @@ void MainWindow::createActions()
     connect(m_redoAction, &QAction::triggered, this, &MainWindow::onRedo);
 
     m_historyAction = new QAction(themeIcon(QStringLiteral("view-list-details"), QStyle::SP_FileDialogDetailedView),
-                                  tr("Take &History…"), this);
-    m_historyAction->setStatusTip(tr("Browse all cached takes"));
+                                  tr("Take &History"), this);
+    m_historyAction->setStatusTip(tr("Show or hide the take history panel"));
     m_historyAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_H));
-    connect(m_historyAction, &QAction::triggered, this, &MainWindow::onHistory);
+    m_historyAction->setCheckable(true);
+    connect(m_historyAction, &QAction::toggled, this, &MainWindow::onHistory);
 
     m_quitAction = new QAction(themeIcon(QStringLiteral("application-exit"), QStyle::SP_DialogCloseButton),
                                tr("&Quit"), this);
@@ -374,6 +395,13 @@ void MainWindow::loadSettings()
     m_player->setLoop(loop);
     m_autoScaleWaveform = autoScale;
     m_autoScaleAction->setChecked(autoScale);
+    const bool showTakes = s.value(QStringLiteral("view/takesPanel"), false).toBool();
+    if (m_takesDock) {
+        m_takesDock->setVisible(showTakes);
+        m_historyAction->setChecked(showTakes);
+        if (showTakes)
+            refreshTakesPanel();
+    }
     m_restoringSettings = false;
     updateMicGainLabel();
 }
@@ -389,6 +417,7 @@ void MainWindow::saveSettings()
     s.setValue(QStringLiteral("audio/playbackVolume"), m_outputVolumeSlider->value());
     s.setValue(QStringLiteral("playback/loop"), m_loopAction->isChecked());
     s.setValue(QStringLiteral("view/autoScaleWaveform"), m_autoScaleWaveform);
+    s.setValue(QStringLiteral("view/takesPanel"), m_takesDock && m_takesDock->isVisible());
 }
 
 bool MainWindow::hasDocument() const
@@ -710,6 +739,7 @@ void MainWindow::finishRecordingStop()
             updateWindowTitle();
             statusBar()->showMessage(
                 tr("Take saved to cache (%1)").arg(m_history.takes().size()), 4000);
+            refreshTakesPanel();
         } else {
             statusBar()->showMessage(tr("Could not archive take to cache"), 4000);
         }
@@ -874,6 +904,7 @@ void MainWindow::onUndo()
     setAppState(AppState::Ready);
     statusBar()->showMessage(
         tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size()), 3000);
+    refreshTakesPanel();
 }
 
 void MainWindow::onRedo()
@@ -897,71 +928,95 @@ void MainWindow::onRedo()
     setAppState(AppState::Ready);
     statusBar()->showMessage(
         tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size()), 3000);
+    refreshTakesPanel();
 }
 
-void MainWindow::onHistory()
+void MainWindow::onHistory(bool show)
+{
+    if (!m_takesDock)
+        return;
+    m_takesDock->setVisible(show);
+    if (show)
+        refreshTakesPanel();
+}
+
+void MainWindow::refreshTakesPanel()
+{
+    if (!m_takesPanel)
+        return;
+    m_history.reload();
+    m_takesPanel->setCacheDir(m_history.cacheDir());
+    m_takesPanel->setTakes(m_history.takes(), m_history.currentIndex());
+}
+
+void MainWindow::loadTakeAtIndex(int index)
 {
     if (m_state == AppState::Recording)
         return;
-    // Only stop playback — do not stop capture. pa_simple_read blocks, so
-    // capture->stop() waiting on the worker freezes the GUI for seconds.
-    if (m_state == AppState::Playing || m_state == AppState::Paused)
-        m_player->stop();
-
-    m_history.reload();
-
-    HistoryDialog dlg(m_history.takes(), m_history.currentIndex(),
-                      m_history.cacheDir(), this);
-    dlg.setWindowModality(Qt::WindowModal);
-    dlg.adjustSize();
-    if (auto *p = dlg.parentWidget()) {
-        const QRect pg = p->geometry();
-        dlg.move(pg.center() - dlg.rect().center());
+    if (m_state == AppState::Playing || m_state == AppState::Paused) {
+        if (m_player)
+            m_player->stop();
     }
-    dlg.show();
-    dlg.raise();
-    dlg.activateWindow();
-    if (dlg.exec() != QDialog::Accepted)
-        return;
-
-    const int idx = dlg.selectedIndex();
-    if (idx < 0)
-        return;
-
-    if (dlg.deleteRequested()) {
-        const bool wasCurrent = (idx == m_history.currentIndex());
-        if (!m_history.removeAt(idx))
-            return;
-        if (wasCurrent || m_history.takes().isEmpty()) {
-            if (m_history.takes().isEmpty()) {
-                clearDocument();
-            } else {
-                const QString path = m_history.currentPath();
-                m_tempPath = path;
-                m_isTemporary = false;
-                m_savedPath.clear();
-                m_modified = true;
-                loadDocumentForPlayback(path);
-                updateWindowTitle();
-                setAppState(AppState::Ready);
-            }
-        }
-        statusBar()->showMessage(tr("Take deleted"), 3000);
-        return;
-    }
-
-    if (!m_history.selectIndex(idx))
+    if (!m_history.selectIndex(index))
         return;
     const QString path = m_history.currentPath();
+    if (path.isEmpty() || !QFileInfo::exists(path))
+        return;
     m_tempPath = path;
     m_isTemporary = false;
     m_savedPath.clear();
     m_modified = true;
     loadDocumentForPlayback(path);
-    updateWindowTitle();
     setAppState(AppState::Ready);
+    updateWindowTitle();
     statusBar()->showMessage(
         tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size()), 3000);
+    // Keep list highlight in sync without re-entry load
+    if (m_takesPanel)
+        m_takesPanel->setTakes(m_history.takes(), m_history.currentIndex());
+}
+
+void MainWindow::onTakesLoadRequested(int index)
+{
+    if (index == m_history.currentIndex() && hasDocument()
+        && documentPathForPlayback() == m_history.currentPath())
+        return;
+    loadTakeAtIndex(index);
+}
+
+void MainWindow::onTakesDeleteRequested(int index)
+{
+    if (m_state == AppState::Recording)
+        return;
+    if (index < 0 || index >= m_history.takes().size())
+        return;
+    const QString name = QFileInfo(m_history.takes().at(index)).fileName();
+    if (QMessageBox::question(this, tr("Delete take"),
+            tr("Permanently delete “%1” from the cache?").arg(name))
+        != QMessageBox::Yes)
+        return;
+    if (m_state == AppState::Playing || m_state == AppState::Paused) {
+        if (m_player)
+            m_player->stop();
+    }
+    const bool wasCurrent = (index == m_history.currentIndex());
+    if (!m_history.removeAt(index))
+        return;
+    if (wasCurrent || m_history.takes().isEmpty()) {
+        if (m_history.takes().isEmpty()) {
+            clearDocument();
+        } else {
+            const QString path = m_history.currentPath();
+            m_tempPath = path;
+            m_isTemporary = false;
+            m_savedPath.clear();
+            m_modified = true;
+            loadDocumentForPlayback(path);
+            setAppState(AppState::Ready);
+        }
+    }
+    updateWindowTitle();
+    refreshTakesPanel();
 }
 
 void MainWindow::onAbout()
@@ -1313,7 +1368,7 @@ void MainWindow::updateControls()
     m_saveAsAction->setEnabled(!recording && hasDoc);
     m_undoAction->setEnabled((ready || paused) && m_history.canPrevious());
     m_redoAction->setEnabled((ready || paused) && m_history.canNext());
-    m_historyAction->setEnabled(ready || paused);
+    m_historyAction->setEnabled(true); // panel may stay open; load is gated while recording
     m_normalizeAction->setEnabled((ready || paused) && hasDoc);
     // Record is a latch while recording; otherwise always available so pause
     // cannot trap the user (starting record stops playback first).

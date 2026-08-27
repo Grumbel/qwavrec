@@ -16,6 +16,9 @@
 #include "recordinghistory.h"
 #include "pulsebackend.h"
 
+class TakesPanel;
+class QDockWidget;
+
 class QComboBox;
 class QLabel;
 class QSlider;
@@ -54,7 +57,9 @@ private slots:
     void onAbout();
     void onUndo();
     void onRedo();
-    void onHistory();
+    void onHistory(bool show);
+    void onTakesLoadRequested(int index);
+    void onTakesDeleteRequested(int index);
 
     void onPlayerStateChanged(PulsePlayback::State state);
     void onPlayerPosition(qint64 ms);
@@ -85,6 +90,8 @@ private:
     void startMonitoring();
     void stopMonitoring();
     void finishRecordingStop();
+    void refreshTakesPanel();
+    void loadTakeAtIndex(int index);
     void applySelectionToPlayer();
 
     bool maybeSave();
@@ -129,6 +136,8 @@ private:
     LevelMeter *m_inputMeter = nullptr;
     LevelMeter *m_outputMeter = nullptr;
     WaveformWidget *m_waveform = nullptr;
+    QDockWidget *m_takesDock = nullptr;
+    TakesPanel *m_takesPanel = nullptr;
 
     PulseCapture *m_capture = nullptr;
     PulsePlayback *m_player = nullptr;

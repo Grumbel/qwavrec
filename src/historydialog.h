@@ -4,36 +4,45 @@
 #ifndef HISTORYDIALOG_H
 #define HISTORYDIALOG_H
 
-#include <QDialog>
+#include <QWidget>
 #include <QStringList>
 
 class QListWidget;
 class QLabel;
+class QPushButton;
 
-class HistoryDialog : public QDialog
+/**
+ * Persistent take list for the main window (embedded in a QDockWidget).
+ * Not a modal dialog — stays open for fast switching between takes.
+ */
+class TakesPanel : public QWidget
 {
     Q_OBJECT
 public:
-    explicit HistoryDialog(const QStringList &takes, int currentIndex,
-                           const QString &cacheDir, QWidget *parent = nullptr);
+    explicit TakesPanel(QWidget *parent = nullptr);
 
-    /** Index chosen to load, or -1 if none / cancelled. */
-    int selectedIndex() const { return m_selected; }
-    /** True if the user asked to delete the selected take. */
-    bool deleteRequested() const { return m_delete; }
+    void setCacheDir(const QString &dir);
+    /** Rebuild the list; highlights currentIndex without emitting loadRequested. */
+    void setTakes(const QStringList &takes, int currentIndex);
+
+signals:
+    void loadRequested(int index);
+    void deleteRequested(int index);
 
 private slots:
-    void onLoad();
-    void onDelete();
+    void onItemActivated(QListWidgetItem *item);
+    void onCurrentRowChanged(int row);
+    void onDeleteClicked();
 
 private:
-    void refreshDetails();
+    void updateDetails();
 
+    QLabel *m_header = nullptr;
     QListWidget *m_list = nullptr;
     QLabel *m_details = nullptr;
+    QPushButton *m_deleteBtn = nullptr;
     QStringList m_takes;
-    int m_selected = -1;
-    bool m_delete = false;
+    bool m_blockLoad = false;
 };
 
 #endif

@@ -7,30 +7,52 @@
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QLabel>
-#include <QDialogButtonBox>
 #include <QPushButton>
 #include <QFileInfo>
-#include <QDateTime>
 #include <QLocale>
-#include <QMessageBox>
 
-HistoryDialog::HistoryDialog(const QStringList &takes, int currentIndex,
-                             const QString &cacheDir, QWidget *parent)
-    : QDialog(parent)
-    , m_takes(takes)
+TakesPanel::TakesPanel(QWidget *parent)
+    : QWidget(parent)
 {
-    setWindowTitle(tr("Take History"));
-    setWindowFlags(windowFlags() | Qt::Dialog);
-    setMinimumSize(480, 360);
-    resize(520, 420);
-
     auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(6, 6, 6, 6);
 
-    layout->addWidget(new QLabel(
-        tr("Cached takes in %1 (newest at the bottom):").arg(cacheDir)));
+    m_header = new QLabel(tr("Cached takes (newest at the bottom):"));
+    m_header->setWordWrap(true);
+    layout->addWidget(m_header);
 
     m_list = new QListWidget;
     m_list->setAlternatingRowColors(true);
+    m_list->setSelectionMode(QAbstractItemView::SingleSelection);
+    layout->addWidget(m_list, 1);
+
+    m_details = new QLabel;
+    m_details->setWordWrap(true);
+    m_details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(m_details);
+
+    auto *row = new QHBoxLayout;
+    m_deleteBtn = new QPushButton(tr("Delete"));
+    m_deleteBtn->setEnabled(false);
+    row->addStretch();
+    row->addWidget(m_deleteBtn);
+    layout->addLayout(row);
+
+    connect(m_list, &QListWidget::itemActivated, this, &TakesPanel::onItemActivated);
+    connect(m_list, &QListWidget::currentRowChanged, this, &TakesPanel::onCurrentRowChanged);
+    connect(m_deleteBtn, &QPushButton::clicked, this, &TakesPanel::onDeleteClicked);
+}
+
+void TakesPanel::setCacheDir(const QString &dir)
+{
+    m_header->setText(tr("Cached takes in %1\n(newest at the bottom; click to load):").arg(dir));
+}
+
+void TakesPanel::setTakes(const QStringList &takes, int currentIndex)
+{
+    m_takes = takes;
+    m_blockLoad = true;
+    m_list->clear();
     for (int i = 0; i < takes.size(); ++i) {
         const QFileInfo fi(takes.at(i));
         const QString stamp = fi.birthTime().isValid()
@@ -50,66 +72,45 @@ HistoryDialog::HistoryDialog(const QStringList &takes, int currentIndex,
         m_list->setCurrentRow(currentIndex);
     else if (m_list->count() > 0)
         m_list->setCurrentRow(m_list->count() - 1);
-
-    layout->addWidget(m_list, 1);
-
-    m_details = new QLabel;
-    m_details->setWordWrap(true);
-    m_details->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(m_details);
-
-    auto *buttons = new QDialogButtonBox;
-    auto *loadBtn = buttons->addButton(tr("Load"), QDialogButtonBox::AcceptRole);
-    auto *delBtn = buttons->addButton(tr("Delete"), QDialogButtonBox::DestructiveRole);
-    buttons->addButton(QDialogButtonBox::Close);
-    layout->addWidget(buttons);
-
-    connect(loadBtn, &QPushButton::clicked, this, &HistoryDialog::onLoad);
-    connect(delBtn, &QPushButton::clicked, this, &HistoryDialog::onDelete);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    connect(m_list, &QListWidget::itemDoubleClicked, this, &HistoryDialog::onLoad);
-    connect(m_list, &QListWidget::currentRowChanged, this, [this](int) { refreshDetails(); });
-
-    loadBtn->setDefault(true);
-    delBtn->setEnabled(m_list->count() > 0);
-    loadBtn->setEnabled(m_list->count() > 0);
-    refreshDetails();
+    m_blockLoad = false;
+    m_deleteBtn->setEnabled(m_list->currentRow() >= 0);
+    updateDetails();
 }
 
-void HistoryDialog::refreshDetails()
+void TakesPanel::onItemActivated(QListWidgetItem *item)
+{
+    if (!item || m_blockLoad)
+        return;
+    emit loadRequested(item->data(Qt::UserRole).toInt());
+}
+
+void TakesPanel::onCurrentRowChanged(int row)
+{
+    m_deleteBtn->setEnabled(row >= 0);
+    updateDetails();
+    if (m_blockLoad || row < 0)
+        return;
+    // Single click / arrow keys load immediately for fast take switching.
+    emit loadRequested(row);
+}
+
+void TakesPanel::onDeleteClicked()
+{
+    const int row = m_list->currentRow();
+    if (row < 0)
+        return;
+    emit deleteRequested(row);
+}
+
+void TakesPanel::updateDetails()
 {
     const int row = m_list->currentRow();
     if (row < 0 || row >= m_takes.size()) {
-        m_details->setText(tr("No takes in cache."));
+        m_details->setText(m_takes.isEmpty() ? tr("No takes in cache.") : QString());
         return;
     }
     const QFileInfo fi(m_takes.at(row));
-    m_details->setText(tr("Path: %1\nSize: %2 bytes")
+    m_details->setText(tr("%1\n%2 KB")
         .arg(fi.absoluteFilePath())
-        .arg(fi.size()));
-}
-
-void HistoryDialog::onLoad()
-{
-    const int row = m_list->currentRow();
-    if (row < 0)
-        return;
-    m_selected = m_list->item(row)->data(Qt::UserRole).toInt();
-    m_delete = false;
-    accept();
-}
-
-void HistoryDialog::onDelete()
-{
-    const int row = m_list->currentRow();
-    if (row < 0)
-        return;
-    const QString name = QFileInfo(m_takes.at(row)).fileName();
-    if (QMessageBox::question(this, tr("Delete Take"),
-            tr("Permanently delete “%1” from the cache?").arg(name))
-        != QMessageBox::Yes)
-        return;
-    m_selected = m_list->item(row)->data(Qt::UserRole).toInt();
-    m_delete = true;
-    accept();
+        .arg(fi.size() / 1024));
 }
