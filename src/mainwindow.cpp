@@ -758,7 +758,8 @@ bool MainWindow::normalizeCurrentFile()
     QAudioFormat fmt;
     {
         QFile file(path);
-        file.open(QIODevice::ReadOnly);
+        if (!file.open(QIODevice::ReadOnly))
+            return false;
         file.read(12);
         while (!file.atEnd()) {
             const QByteArray id = file.read(4);

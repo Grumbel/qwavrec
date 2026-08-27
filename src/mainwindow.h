@@ -5,6 +5,8 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QStyle>
+#include <QIcon>
 #include <QMediaDevices>
 #include <QAudioSource>
 #include <QIODevice>
