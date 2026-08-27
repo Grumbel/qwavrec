@@ -847,9 +847,13 @@ void MainWindow::finishRecordingStop()
 
     const bool wantInsert = m_insertRecord && !m_insertBasePcm.isEmpty();
 
-    if (!wantInsert && !m_liveRecordPeaks.isEmpty()) {
-        m_rawPeaks = m_liveRecordPeaks;
-        m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+    // Final waveform from full PCM (same path as Open / load)
+    if (!wantInsert && !m_recordPcm.isEmpty()) {
+        QAudioFormat liveFmt;
+        liveFmt.setSampleFormat(QAudioFormat::Int16);
+        liveFmt.setSampleRate(48000);
+        liveFmt.setChannelCount(1);
+        setWaveformFromPcm(m_recordPcm, liveFmt);
     }
 
     setAppState(AppState::Ready);
@@ -1699,11 +1703,22 @@ void MainWindow::updateInsertPreviewWaveform()
 
     sampleBase(0, splitIdx, leftBins);
 
-    // Live insert peaks (resample to liveBins)
-    if (!m_liveRecordPeaks.isEmpty()) {
-        for (int i = 0; i < liveBins; ++i) {
-            const int idx = int(qreal(i) / liveBins * m_liveRecordPeaks.size());
-            out.append(m_liveRecordPeaks.at(qBound(0, idx, m_liveRecordPeaks.size() - 1)));
+    // Live insert peaks from full capture PCM (same algorithm as document load)
+    if (!m_recordPcm.isEmpty() && liveBins > 0) {
+        QAudioFormat liveFmt;
+        liveFmt.setSampleFormat(QAudioFormat::Int16);
+        liveFmt.setSampleRate(48000);
+        liveFmt.setChannelCount(1);
+        const QVector<float> livePeaks = WavFile::peaks(m_recordPcm, liveFmt, liveBins);
+        if (!livePeaks.isEmpty()) {
+            for (float v : livePeaks)
+                out.append(v);
+            // peaks() may return fewer bins for very short audio
+            while (out.size() < leftBins + liveBins)
+                out.append(0.f);
+        } else {
+            for (int i = 0; i < liveBins; ++i)
+                out.append(0.f);
         }
     } else {
         for (int i = 0; i < liveBins; ++i)
@@ -1743,24 +1758,18 @@ void MainWindow::onMeterTick()
         if (!pcm.isEmpty()) {
             m_recordPcm.append(pcm);
             m_wavWriter.write(pcm.constData(), pcm.size());
-            // Peak for live waveform (downsample: one sample per tick)
-            float peak = 0.f;
-            const auto *s = reinterpret_cast<const qint16 *>(pcm.constData());
-            const int n = pcm.size() / 2;
-            for (int i = 0; i < n; i += 8) // stride — cheap
-                peak = qMax(peak, qAbs(s[i] / 32768.f));
-            m_liveRecordPeaks.append(peak);
-            if (m_liveRecordPeaks.size() > 800) {
-                QVector<float> reduced;
-                reduced.reserve(400);
-                for (int i = 0; i + 1 < m_liveRecordPeaks.size(); i += 2)
-                    reduced.append(qMax(m_liveRecordPeaks[i], m_liveRecordPeaks[i + 1]));
-                m_liveRecordPeaks = reduced;
-            }
+            // Same peak algorithm as load/open (400 bins over full PCM) so
+            // live detail matches the waveform after stop/reload. Recompute
+            // every tick is fine at 20 Hz for typical take lengths.
+            QAudioFormat liveFmt;
+            liveFmt.setSampleFormat(QAudioFormat::Int16);
+            liveFmt.setSampleRate(48000);
+            liveFmt.setChannelCount(1);
             if (m_insertRecord && !m_insertBasePeaks.isEmpty()) {
+                m_liveRecordPeaks = WavFile::peaks(m_recordPcm, liveFmt, 200);
                 updateInsertPreviewWaveform();
             } else {
-                m_rawPeaks = m_liveRecordPeaks;
+                m_rawPeaks = WavFile::peaks(m_recordPcm, liveFmt, 400);
                 m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
             }
         }
