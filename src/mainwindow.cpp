@@ -381,8 +381,7 @@ void MainWindow::createToolBar()
     // Document edit undo/redo
     tb->addAction(m_editUndoAction);
     tb->addAction(m_editRedoAction);
-    tb->addSeparator();
-    tb->addAction(m_loopAction);
+    // Loop lives under the transport buttons with Insert
     // Normalize stays in Edit menu only — avoids accidental clicks
 }
 
@@ -456,11 +455,29 @@ void MainWindow::createCentralWidget()
     };
     buttonLayout->addStretch();
     buttonLayout->addWidget(makeBig(m_recordAction));
-    buttonLayout->addWidget(makeBig(m_insertRecordAction));
     buttonLayout->addWidget(makeBig(m_playAction));
     buttonLayout->addWidget(makeBig(m_stopAction));
     buttonLayout->addStretch();
     mainLayout->addLayout(buttonLayout);
+
+    // Mode toggles under the main transport (Insert + Loop)
+    auto *toggleLayout = new QHBoxLayout;
+    toggleLayout->setSpacing(8);
+    auto makeToggle = [](QAction *a) {
+        auto *btn = new QToolButton;
+        btn->setDefaultAction(a);
+        btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        btn->setIconSize(QSize(20, 20));
+        btn->setMinimumHeight(32);
+        btn->setCheckable(true);
+        btn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        return btn;
+    };
+    toggleLayout->addStretch();
+    toggleLayout->addWidget(makeToggle(m_insertRecordAction));
+    toggleLayout->addWidget(makeToggle(m_loopAction));
+    toggleLayout->addStretch();
+    mainLayout->addLayout(toggleLayout);
 
     statusBar()->showMessage(tr("Ready"));
 }
