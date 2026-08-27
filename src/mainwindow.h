@@ -51,6 +51,7 @@ private slots:
     void onStop();
     void onNormalize();
     void onLoopToggled(bool on);
+    void onAutoScaleWaveformToggled(bool on);
     void onAbout();
     void onUndo();
     void onRedo();
@@ -108,6 +109,7 @@ private:
     QAction *m_aboutAction = nullptr;
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
+    QAction *m_autoScaleAction = nullptr;
 
     QComboBox *m_inputCombo = nullptr;
     QComboBox *m_outputCombo = nullptr;
@@ -144,6 +146,8 @@ private:
     QString m_pendingInputId;
     QString m_pendingOutputId;
     bool m_restoringSettings = false;
+    bool m_autoScaleWaveform = false;
+    QVector<float> m_rawPeaks;
 };
 
 #endif

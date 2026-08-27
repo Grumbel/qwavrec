@@ -6,6 +6,7 @@
 #include <QtEndian>
 #include <QFile>
 #include <QMediaDevices>
+#include <QtMath>
 
 WavPlayer::WavPlayer(QObject *parent)
     : QObject(parent)
@@ -28,7 +29,7 @@ bool WavPlayer::load(const QString &path)
     m_pcm.clear();
     m_path.clear();
     m_durationMs = 0;
-    m_pauseOffset = 0;
+    m_byteOffset = 0;
 
     if (!parseAndLoad(path))
         return false;
@@ -101,9 +102,7 @@ bool WavPlayer::parseAndLoad(const QString &path)
                 return false;
             }
             gotFmt = true;
-            if (sz > 64)
-                file.seek(chunkPos + sz + (sz & 1));
-            else if (fmt.size() < int(sz))
+            if (int(sz) > fmt.size())
                 file.seek(chunkPos + sz + (sz & 1));
         } else if (id == "data") {
             dataOffset = chunkPos;
@@ -121,30 +120,69 @@ bool WavPlayer::parseAndLoad(const QString &path)
 
     file.seek(dataOffset);
     m_pcm = file.read(dataSize);
-    if (m_pcm.size() < int(dataSize) && m_pcm.isEmpty()) {
+    if (m_pcm.isEmpty()) {
         emit errorOccurred(tr("Could not read WAV data"));
         return false;
     }
     return true;
 }
 
-void WavPlayer::recreateSink()
+void WavPlayer::ensureSink()
 {
-    if (m_sink) {
-        m_sink->stop();
-        m_sink->deleteLater();
-        m_sink = nullptr;
-    }
+    if (m_sink)
+        return;
     if (m_device.isNull())
         m_device = QMediaDevices::defaultAudioOutput();
-
-    if (!m_device.isFormatSupported(m_format)) {
-        // Still try — some backends accept and convert
-    }
-
     m_sink = new QAudioSink(m_device, m_format, this);
     m_sink->setVolume(m_volume);
     connect(m_sink, &QAudioSink::stateChanged, this, &WavPlayer::onSinkStateChanged);
+}
+
+void WavPlayer::stopSink()
+{
+    if (!m_sink)
+        return;
+    m_restarting = true;
+    m_sink->stop();
+    m_restarting = false;
+}
+
+void WavPlayer::startFromByteOffset(qint64 byteOffset)
+{
+    ensureSink();
+    if (!m_sink)
+        return;
+
+    const int bpf = m_format.bytesPerFrame();
+    if (bpf > 0)
+        byteOffset = (byteOffset / bpf) * bpf;
+    byteOffset = qBound(qint64(0), byteOffset, qint64(m_pcm.size()));
+    m_byteOffset = byteOffset;
+
+    stopSink();
+
+    m_buffer.close();
+    m_buffer.setData(QByteArray::fromRawData(m_pcm.constData() + byteOffset,
+                                             int(m_pcm.size() - byteOffset)));
+    // fromRawData does not copy — keep m_pcm alive; QBuffer needs owned data for safety:
+    m_buffer.setData(m_pcm.mid(int(byteOffset)));
+    m_buffer.open(QIODevice::ReadOnly);
+
+    m_sink->start(&m_buffer);
+}
+
+qint64 WavPlayer::msToBytes(qint64 ms) const
+{
+    if (m_format.sampleRate() <= 0)
+        return 0;
+    return m_format.bytesForDuration(ms * 1000);
+}
+
+qint64 WavPlayer::bytesToMs(qint64 bytes) const
+{
+    if (m_format.sampleRate() <= 0 || m_format.bytesPerFrame() <= 0)
+        return 0;
+    return (bytes / m_format.bytesPerFrame()) * 1000 / m_format.sampleRate();
 }
 
 void WavPlayer::play()
@@ -152,26 +190,15 @@ void WavPlayer::play()
     if (m_pcm.isEmpty())
         return;
 
-    if (m_state == Paused && m_sink) {
+    if (m_state == Paused && m_sink && m_sink->state() == QAudio::SuspendedState) {
         m_sink->resume();
         setState(Playing);
         m_posTimer.start();
         return;
     }
 
-    recreateSink();
-    if (!m_sink)
-        return;
-
-    m_buffer.close();
-    m_buffer.setData(m_pcm);
-    m_buffer.open(QIODevice::ReadOnly);
-    if (m_pauseOffset > 0 && m_pauseOffset < m_pcm.size())
-        m_buffer.seek(m_pauseOffset);
-    else
-        m_pauseOffset = 0;
-
-    m_sink->start(&m_buffer);
+    // Start (or restart) from current byte offset
+    startFromByteOffset(m_byteOffset);
     setState(Playing);
     m_posTimer.start();
 }
@@ -180,7 +207,8 @@ void WavPlayer::pause()
 {
     if (m_state != Playing || !m_sink)
         return;
-    m_pauseOffset = m_buffer.pos();
+    // Capture approximate position before suspend
+    m_byteOffset = msToBytes(position());
     m_sink->suspend();
     setState(Paused);
     m_posTimer.stop();
@@ -190,32 +218,31 @@ void WavPlayer::pause()
 void WavPlayer::stop()
 {
     m_posTimer.stop();
-    if (m_sink) {
-        m_sink->stop();
-    }
+    stopSink();
     m_buffer.close();
-    m_pauseOffset = 0;
+    m_byteOffset = 0;
     setState(Stopped);
     emit positionChanged(0);
 }
 
 void WavPlayer::setPosition(qint64 ms)
 {
-    if (m_pcm.isEmpty() || m_format.sampleRate() <= 0)
+    if (m_pcm.isEmpty())
         return;
-    const qint64 bytes = m_format.bytesForDuration(ms * 1000);
-    m_pauseOffset = qBound(qint64(0), bytes, qint64(m_pcm.size()));
-    // Align to frame
-    const int bpf = m_format.bytesPerFrame();
-    if (bpf > 0)
-        m_pauseOffset = (m_pauseOffset / bpf) * bpf;
+    ms = qBound(qint64(0), ms, m_durationMs);
+    const qint64 bytes = msToBytes(ms);
 
     if (m_state == Playing) {
-        stop();
-        play();
+        startFromByteOffset(bytes);
+        setState(Playing);
+        m_posTimer.start();
     } else {
-        emit positionChanged(position());
+        m_byteOffset = bytes;
+        // Stay Stopped or Paused; next play continues from here
+        if (m_state == Paused)
+            setState(Paused);
     }
+    emit positionChanged(ms);
 }
 
 void WavPlayer::setVolume(qreal volume)
@@ -234,27 +261,54 @@ void WavPlayer::setDevice(const QAudioDevice &device)
 {
     const bool wasPlaying = (m_state == Playing);
     const qint64 pos = position();
-    if (m_state != Stopped)
-        stop();
-    m_device = device;
-    if (wasPlaying) {
-        setPosition(pos);
-        play();
+    stop();
+    if (m_sink) {
+        m_sink->deleteLater();
+        m_sink = nullptr;
     }
+    m_device = device;
+    m_byteOffset = msToBytes(pos);
+    if (wasPlaying)
+        play();
 }
 
 qint64 WavPlayer::position() const
 {
-    if (m_pcm.isEmpty() || m_format.sampleRate() <= 0)
+    if (m_pcm.isEmpty())
         return 0;
-    qint64 bytes = m_pauseOffset;
-    if (m_state == Playing && m_buffer.isOpen())
-        bytes = m_buffer.pos();
+    if (m_state == Playing && m_sink) {
+        // elapsedUSecs is relative to last start()
+        const qint64 elapsedMs = m_sink->elapsedUSecs() / 1000;
+        return qMin(m_durationMs, bytesToMs(m_byteOffset) + elapsedMs);
+    }
+    return bytesToMs(m_byteOffset);
+}
+
+qreal WavPlayer::levelAtPosition(qint64 ms) const
+{
+    if (m_pcm.isEmpty() || m_format.bytesPerFrame() <= 0)
+        return 0.0;
     const int bpf = m_format.bytesPerFrame();
-    if (bpf <= 0)
-        return 0;
-    const qint64 frames = bytes / bpf;
-    return frames * 1000 / m_format.sampleRate();
+    qint64 off = msToBytes(ms);
+    off = (off / bpf) * bpf;
+    // ~20 ms window
+    const qint64 win = msToBytes(20);
+    if (off >= m_pcm.size())
+        return 0.0;
+    const qint64 end = qMin(off + win, qint64(m_pcm.size()));
+    float peak = 0.f;
+    if (m_format.sampleFormat() == QAudioFormat::Int16) {
+        const auto *s = reinterpret_cast<const qint16 *>(m_pcm.constData() + off);
+        const int n = int((end - off) / sizeof(qint16));
+        for (int i = 0; i < n; ++i)
+            peak = qMax(peak, qAbs(s[i] / 32768.f));
+    } else if (m_format.sampleFormat() == QAudioFormat::Float) {
+        const auto *s = reinterpret_cast<const float *>(m_pcm.constData() + off);
+        const int n = int((end - off) / sizeof(float));
+        for (int i = 0; i < n; ++i)
+            peak = qMax(peak, qAbs(s[i]));
+    }
+    return qreal(peak);
 }
 
 void WavPlayer::setState(State s)
@@ -267,23 +321,22 @@ void WavPlayer::setState(State s)
 
 void WavPlayer::onSinkStateChanged(QAudio::State state)
 {
+    if (m_restarting)
+        return;
+
     if (state == QAudio::IdleState && m_state == Playing) {
         if (m_loop && !m_pcm.isEmpty()) {
-            m_pauseOffset = 0;
-            m_buffer.close();
-            m_buffer.setData(m_pcm);
-            m_buffer.open(QIODevice::ReadOnly);
-            m_sink->start(&m_buffer);
-            emit positionChanged(0);
+            startFromByteOffset(0);
             return;
         }
         m_posTimer.stop();
-        m_pauseOffset = 0;
+        m_byteOffset = 0;
         setState(Stopped);
         emit positionChanged(0);
     } else if (state == QAudio::StoppedState) {
-        if (m_sink && m_sink->error() != QAudio::NoError) {
+        if (m_sink && m_sink->error() != QAudio::NoError && m_state == Playing) {
             emit errorOccurred(tr("Audio output error"));
+            m_posTimer.stop();
             setState(Stopped);
         }
     }

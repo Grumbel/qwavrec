@@ -42,6 +42,9 @@ public:
     QString path() const { return m_path; }
     QAudioFormat format() const { return m_format; }
 
+    /** Peak level 0..1 around the current playback position (for meters). */
+    qreal levelAtPosition(qint64 ms) const;
+
 signals:
     void stateChanged(WavPlayer::State state);
     void positionChanged(qint64 ms);
@@ -55,7 +58,11 @@ private slots:
 private:
     bool parseAndLoad(const QString &path);
     void setState(State s);
-    void recreateSink();
+    void ensureSink();
+    void stopSink();
+    void startFromByteOffset(qint64 byteOffset);
+    qint64 msToBytes(qint64 ms) const;
+    qint64 bytesToMs(qint64 bytes) const;
 
     QString m_path;
     QByteArray m_pcm;
@@ -68,8 +75,9 @@ private:
     State m_state = Stopped;
     qint64 m_durationMs = 0;
     qreal m_volume = 0.8;
-    qint64 m_pauseOffset = 0; // bytes into pcm when paused
+    qint64 m_byteOffset = 0; // start of current play segment
     bool m_loop = false;
+    bool m_restarting = false; // suppress IdleState handling during intentional restart
 };
 
 #endif

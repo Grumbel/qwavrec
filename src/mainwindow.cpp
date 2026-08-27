@@ -199,6 +199,11 @@ void MainWindow::createActions()
     m_loopAction->setCheckable(true);
     connect(m_loopAction, &QAction::toggled, this, &MainWindow::onLoopToggled);
 
+    m_autoScaleAction = new QAction(tr("Auto-&Scale Waveform"), this);
+    m_autoScaleAction->setStatusTip(tr("Normalize waveform display so quiet recordings fill the view"));
+    m_autoScaleAction->setCheckable(true);
+    connect(m_autoScaleAction, &QAction::toggled, this, &MainWindow::onAutoScaleWaveformToggled);
+
     m_aboutAction = new QAction(tr("&About QWavRec"), this);
     connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAbout);
 }
@@ -225,6 +230,9 @@ void MainWindow::createMenus()
     transportMenu->addAction(m_stopAction);
     transportMenu->addSeparator();
     transportMenu->addAction(m_loopAction);
+
+    QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
+    viewMenu->addAction(m_autoScaleAction);
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(m_aboutAction);
@@ -323,12 +331,15 @@ void MainWindow::loadSettings()
     const int mic = s.value(QStringLiteral("audio/micGain"), 100).toInt();
     const int out = s.value(QStringLiteral("audio/playbackVolume"), 80).toInt();
     const bool loop = s.value(QStringLiteral("playback/loop"), false).toBool();
+    const bool autoScale = s.value(QStringLiteral("view/autoScaleWaveform"), false).toBool();
 
     m_restoringSettings = true;
     m_inputVolumeSlider->setValue(qBound(0, mic, 300));
     m_outputVolumeSlider->setValue(qBound(0, out, 100));
     m_loopAction->setChecked(loop);
     m_player->setLoop(loop);
+    m_autoScaleWaveform = autoScale;
+    m_autoScaleAction->setChecked(autoScale);
     m_restoringSettings = false;
     updateMicGainLabel();
 }
@@ -343,6 +354,7 @@ void MainWindow::saveSettings()
     s.setValue(QStringLiteral("audio/micGain"), m_inputVolumeSlider->value());
     s.setValue(QStringLiteral("audio/playbackVolume"), m_outputVolumeSlider->value());
     s.setValue(QStringLiteral("playback/loop"), m_loopAction->isChecked());
+    s.setValue(QStringLiteral("view/autoScaleWaveform"), m_autoScaleWaveform);
 }
 
 bool MainWindow::hasDocument() const
@@ -378,6 +390,7 @@ void MainWindow::clearDocument()
     m_timeLabel->setText(tr("00:00 / 00:00"));
     m_waveform->clear();
     m_liveRecordPeaks.clear();
+    m_rawPeaks.clear();
     updateWindowTitle();
     setAppState(AppState::Ready);
 }
@@ -462,7 +475,8 @@ void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &f
         }
         peaks.append(mx);
     }
-    m_waveform->setPeaks(normalizedPeaks(peaks));
+    m_rawPeaks = peaks;
+    m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
 }
 
 void MainWindow::loadDocumentForPlayback(const QString &path)
@@ -611,8 +625,10 @@ void MainWindow::onRecord()
         m_wavWriter.close();
         m_recordAction->setChecked(false);
 
-        if (!m_liveRecordPeaks.isEmpty())
-            m_waveform->setPeaks(normalizedPeaks(m_liveRecordPeaks));
+        if (!m_liveRecordPeaks.isEmpty()) {
+            m_rawPeaks = m_liveRecordPeaks;
+            m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+        }
 
         if (!m_tempPath.isEmpty()) {
             const QString archived = m_history.archiveTake(m_tempPath);
@@ -833,6 +849,15 @@ bool MainWindow::normalizeCurrentFile()
 void MainWindow::onLoopToggled(bool on)
 {
     m_player->setLoop(on);
+    if (!m_restoringSettings)
+        saveSettings();
+}
+
+void MainWindow::onAutoScaleWaveformToggled(bool on)
+{
+    m_autoScaleWaveform = on;
+    if (!m_rawPeaks.isEmpty())
+        m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
     if (!m_restoringSettings)
         saveSettings();
 }
@@ -1070,8 +1095,8 @@ void MainWindow::onAudioSourceReadyRead()
                 reduced.append(qMax(m_liveRecordPeaks[i * 2], m_liveRecordPeaks[i * 2 + 1]));
             m_liveRecordPeaks = reduced;
         }
-        // Normalize for display so quiet takes still fill the widget
-        m_waveform->setPeaks(normalizedPeaks(m_liveRecordPeaks));
+        m_rawPeaks = m_liveRecordPeaks;
+        m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
         m_timeLabel->setText(formatTime(m_recordTimer.elapsed()));
         m_duration = m_recordTimer.elapsed();
     }
@@ -1107,10 +1132,14 @@ void MainWindow::onPlayerStateChanged(WavPlayer::State state)
 void MainWindow::onPlayerPosition(qint64 ms)
 {
     if (!m_seeking && (m_state == AppState::Playing || m_state == AppState::Paused)) {
+        m_seekSlider->blockSignals(true);
         m_seekSlider->setValue(static_cast<int>(ms));
+        m_seekSlider->blockSignals(false);
         updateTimeLabel();
         if (m_duration > 0)
             m_waveform->setPlaybackPosition(static_cast<qreal>(ms) / m_duration);
+        if (m_state == AppState::Playing)
+            m_outputMeter->setLevel(m_player->levelAtPosition(ms));
     }
 }
 
