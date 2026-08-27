@@ -75,14 +75,18 @@ Info load(const QString &path)
         }
     }
 
-    if (!gotFmt || dataOffset < 0 || dataSize == 0) {
-        info.error = QStringLiteral("WAV missing fmt or data chunk");
+    if (!gotFmt) {
+        info.error = QStringLiteral("WAV missing fmt chunk");
+        return info;
+    }
+    if (dataOffset < 0) {
+        info.error = QStringLiteral("WAV missing data chunk");
         return info;
     }
 
     file.seek(dataOffset);
-    info.pcm = file.read(dataSize);
-    if (info.pcm.isEmpty()) {
+    info.pcm = dataSize > 0 ? file.read(dataSize) : QByteArray();
+    if (dataSize > 0 && info.pcm.isEmpty()) {
         info.error = QStringLiteral("Could not read WAV data");
         return info;
     }

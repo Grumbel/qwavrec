@@ -35,6 +35,7 @@ bool WavWriter::close()
     if (!m_file.isOpen())
         return true;
     writeHeader(static_cast<quint32>(m_dataBytes));
+    m_file.flush();
     m_file.close();
     return true;
 }

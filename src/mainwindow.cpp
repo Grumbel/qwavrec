@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "mainwindow.h"
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QThread>
 #include "levelmeter.h"
 #include "waveformwidget.h"
 #include "markedslider.h"
@@ -576,7 +579,13 @@ void MainWindow::onSaveAs()
 void MainWindow::onRecord()
 {
     if (m_state == AppState::Recording) {
+        // Stop the worker but keep accepting its last queued buffers.
         m_capture->stop();
+        // Drain in-flight samplesReady events into the still-open writer.
+        for (int i = 0; i < 25; ++i) {
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            QThread::msleep(10);
+        }
         m_wavWriter.close();
         m_recordAction->setChecked(false);
 
@@ -586,17 +595,25 @@ void MainWindow::onRecord()
         }
 
         if (!m_tempPath.isEmpty()) {
-            const QString archived = m_history.archiveTake(m_tempPath);
-            if (!archived.isEmpty()) {
-                if (m_isTemporary)
-                    QFile::remove(m_tempPath);
-                m_tempPath = archived;
-                m_isTemporary = false;
-                m_modified = true;
+            QFileInfo fi(m_tempPath);
+            if (fi.size() < 44) {
+                QMessageBox::warning(this, tr("Recording"),
+                    tr("Recording produced no audio data."));
+                QFile::remove(m_tempPath);
+                m_tempPath.clear();
+            } else {
+                const QString archived = m_history.archiveTake(m_tempPath);
+                if (!archived.isEmpty()) {
+                    if (m_isTemporary)
+                        QFile::remove(m_tempPath);
+                    m_tempPath = archived;
+                    m_isTemporary = false;
+                    m_modified = true;
+                }
+                loadDocumentForPlayback(m_tempPath);
+                statusBar()->showMessage(
+                    tr("Take saved to cache (%1)").arg(m_history.takes().size()), 4000);
             }
-            loadDocumentForPlayback(m_tempPath);
-            statusBar()->showMessage(
-                tr("Take saved to cache (%1)").arg(m_history.takes().size()), 4000);
         }
         startMonitoring();
         setAppState(AppState::Ready);

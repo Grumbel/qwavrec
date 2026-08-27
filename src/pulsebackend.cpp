@@ -198,7 +198,7 @@ bool PulseCapture::start(const QString &sourceName, int sampleRate, int channels
     m_format.setSampleFormat(QAudioFormat::Int16);
     m_stop = false;
     m_running = true;
-    const int session = m_session.load();
+    const int session = m_session.fetch_add(1) + 1; // invalidate prior workers
 
     const QString name = sourceName;
     auto *thr = QThread::create([this, name, session]() { runLoop(name, session); });
@@ -215,9 +215,10 @@ void PulseCapture::stop()
 {
     // pa_simple_read() blocks until the next fragment; waiting here freezes
     // the GUI. Just signal the worker — it exits after the current read.
+    // Do NOT bump m_session here: that would drop in-flight samples still
+    // queued for the current recording.
     m_stop = true;
     m_running = false;
-    m_session.fetch_add(1);
 }
 
 void PulseCapture::runLoop(QString sourceName, int session)
