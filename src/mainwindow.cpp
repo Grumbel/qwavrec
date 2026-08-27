@@ -583,14 +583,15 @@ void MainWindow::onSaveAs()
 void MainWindow::onRecord()
 {
     if (m_state == AppState::Recording) {
+        // Leave capture running for the meter. Only disable the PCM queue
+        // and flush whatever is already buffered — never sleep on the GUI thread.
         m_capture->setRecording(false);
-        // Drain remaining PCM from the capture queue
-        for (int i = 0; i < 15; ++i) {
+        for (int i = 0; i < 3; ++i) {
             const QByteArray rest = m_capture->takeRecordedAudio();
-            if (!rest.isEmpty() && m_wavWriter.isOpen())
+            if (rest.isEmpty())
+                break;
+            if (m_wavWriter.isOpen())
                 m_wavWriter.write(rest.constData(), rest.size());
-            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-            QThread::msleep(10);
         }
         m_wavWriter.close();
         m_recordAction->setChecked(false);
@@ -599,6 +600,9 @@ void MainWindow::onRecord()
             m_rawPeaks = m_liveRecordPeaks;
             m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
         }
+
+        setAppState(AppState::Ready);
+        m_monitoring = m_capture && m_capture->isRunning();
 
         if (!m_tempPath.isEmpty()) {
             QFileInfo fi(m_tempPath);
@@ -616,14 +620,13 @@ void MainWindow::onRecord()
                     m_isTemporary = false;
                     m_modified = true;
                 }
+                // Load for playback (may take a moment on long takes — do not
+                // processEvents here; that re-enters the meter timer).
                 loadDocumentForPlayback(m_tempPath);
                 statusBar()->showMessage(
                     tr("Take saved to cache (%1)").arg(m_history.takes().size()), 4000);
             }
         }
-        // Capture still running for the input meter
-        m_monitoring = m_capture->isRunning();
-        setAppState(AppState::Ready);
         return;
     }
 
