@@ -9,6 +9,19 @@ deferred to follow-up commits.
 
 ---
 
+### Residual GUI hitch on record-stop (investigated)
+
+See AGENTS.md “Residual record-stop hitches (post-83b8764 investigation)”.
+
+- [ ] Avoid full-take `QByteArray` copy in `loadPcm` on the GUI thread
+      (move/swap ownership, or lazy load from archive on first Play).
+- [ ] Archive: keep rename on GUI thread; run `QFile::copy` fallback on a
+      worker if rename fails (cross-device). Prefer same filesystem for
+      temp and `$XDG_CACHE_HOME/qwavrec`.
+- [ ] `m_recordPcm.reserve()` when a take starts; drop dual full buffers
+      if possible to cut peak memory.
+- [ ] Fix `onStop` so stopping playback does not stop the capture stream.
+
 ### Monitors (PulseAudio / PipeWire)
 
 **Resolved in pulse backend:** sources are listed via libpulse,

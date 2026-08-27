@@ -220,3 +220,39 @@ existing PipeWire/Pulse tools when appropriate.
   but can hitch briefly on a slow server) — a future improvement is a
   worker + cached list.  
 - Select/cut of regions is still a TODO beyond A–B play/loop.
+
+### Residual record-stop hitches (post-83b8764 investigation)
+
+Catastrophic freezes (disk `WavFile::load`, synchronous `QFile::copy`,
+blocking capture wait) are fixed. Remaining GUI-thread work that can still
+hitch on stop of a long take:
+
+1. **`PulsePlayback::loadPcm` full `QByteArray` copy** after
+   `setAppState(Ready)` but before the slot returns — O(n) memcpy of the
+   whole take (≈ 29 MB for 5 min mono 48 kHz Int16).
+2. **Deferred archive still on the GUI thread** — `QTimer::singleShot(0)`
+   runs `archiveTake` on the next event-loop turn. Rename is instant; the
+   `QFile::copy` fallback (cross-device temp vs cache) blocks the UI again.
+3. **Peak memory ≈ 3× take size** (temp file + `m_recordPcm` + player
+   `m_pcm`) until the singleShot clears `m_recordPcm` — can induce
+   swapping on low-RAM systems and amplify every subsequent hitch.
+4. **`WavWriter::close()` → `flush()`** still runs before Ready; usually
+   cheap on tmpfs, not always.
+5. **`m_recordPcm` is never reserved** — repeated `append` during the take
+   causes geometric realloc copies (jank while recording, possible final
+   realloc on drain).
+
+Also: `onStop` while Playing/Paused currently stops the capture stream
+(brace/indentation accident); that contradicts “leave capture running for
+the meter” and forces a monitoring restart. Capture `stop()` is
+non-blocking, so this is not a multi-second freeze.
+
+Preferred directions (no new `processEvents` / sleep hacks):
+
+- Move or ownership-transfer the PCM into the player (avoid the copy), or
+  load from the archived path lazily on first Play.
+- Keep rename on the GUI thread; if copy is required, do it on a worker
+  and update UI via queued signals.
+- Align temp and cache on the same filesystem so rename almost always wins.
+- `reserve()` a reasonable capacity when a take starts.
+- Do not stop capture when only stopping playback.
