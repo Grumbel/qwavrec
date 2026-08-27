@@ -7,11 +7,6 @@
 #include <QWidget>
 #include <QVector>
 
-/**
- * Static document waveform with an optional playhead.
- * Does not scroll or animate on its own — only changes when setPeaks /
- * setPlaybackPosition / clear are called.
- */
 class WaveformWidget : public QWidget
 {
     Q_OBJECT
@@ -22,8 +17,13 @@ public:
     void clear();
     void setPlaybackPosition(qreal pos); // 0..1
 
+signals:
+    /** User clicked; pos is 0..1 along the waveform. */
+    void seekRequested(qreal pos);
+
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
 

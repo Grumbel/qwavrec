@@ -8,6 +8,7 @@
 #include "recordinghistory.h"
 #include "wavfile.h"
 #include "historydialog.h"
+#include "pulsebackend.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -27,7 +28,6 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
-#include <QAudioDevice>
 #include <QAudioFormat>
 #include <QStyle>
 #include <QIcon>
@@ -39,7 +39,6 @@
 #include <QTemporaryFile>
 #include <QSettings>
 #include <QtMath>
-#include <QtEndian>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -58,18 +57,21 @@ MainWindow::MainWindow(QWidget *parent)
     createToolBar();
     createCentralWidget();
 
-    m_player = new WavPlayer(this);
-    connect(m_player, &WavPlayer::stateChanged, this, &MainWindow::onPlayerStateChanged);
-    connect(m_player, &WavPlayer::positionChanged, this, &MainWindow::onPlayerPosition);
-    connect(m_player, &WavPlayer::durationChanged, this, &MainWindow::onPlayerDuration);
-    connect(m_player, &WavPlayer::errorOccurred, this, &MainWindow::onPlayerError);
+    m_player = new PulsePlayback(this);
+    connect(m_player, &PulsePlayback::stateChanged, this, &MainWindow::onPlayerStateChanged);
+    connect(m_player, &PulsePlayback::positionChanged, this, &MainWindow::onPlayerPosition);
+    connect(m_player, &PulsePlayback::durationChanged, this, &MainWindow::onPlayerDuration);
+    connect(m_player, &PulsePlayback::errorOccurred, this, &MainWindow::onPlayerError);
 
-    connect(&m_devices, &QMediaDevices::audioInputsChanged, this, &MainWindow::updateAudioDevices);
-    connect(&m_devices, &QMediaDevices::audioOutputsChanged, this, &MainWindow::updateAudioDevices);
+    m_capture = new PulseCapture(this);
+    connect(m_capture, &PulseCapture::samplesReady, this, &MainWindow::onCaptureSamples);
+    connect(m_capture, &PulseCapture::errorOccurred, this, &MainWindow::onCaptureError);
+
     connect(m_inputCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onInputDeviceChanged);
     connect(m_outputCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onOutputDeviceChanged);
+    connect(m_waveform, &WaveformWidget::seekRequested, this, &MainWindow::onWaveformSeek);
     connect(m_inputVolumeSlider, &QSlider::valueChanged, this, &MainWindow::onInputVolumeChanged);
     connect(m_outputVolumeSlider, &QSlider::valueChanged, this, &MainWindow::onOutputVolumeChanged);
 
@@ -77,6 +79,14 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_seekSlider, &QSlider::sliderReleased, this, [this]() {
         m_seeking = false;
         onSeek(m_seekSlider->value());
+    });
+    // Clicking the groove updates value then fires this — jump immediately
+    connect(m_seekSlider, &QSlider::actionTriggered, this, [this](int) {
+        if (m_seeking)
+            return;
+        onSeek(m_seekSlider->value());
+        if (m_duration > 0)
+            m_waveform->setPlaybackPosition(double(m_seekSlider->value()) / m_duration);
     });
     connect(m_seekSlider, &QSlider::sliderMoved, this, [this](int v) {
         if (m_seeking) {
@@ -87,9 +97,9 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     loadSettings();
-    updateAudioDevices();
+    refreshDevices();
     setAppState(AppState::Ready);
-    startAudioSource();
+    startMonitoring();
     updateWindowTitle();
 }
 
@@ -98,8 +108,11 @@ MainWindow::~MainWindow()
     saveSettings();
     if (m_state == AppState::Recording)
         onRecord();
-    stopAudioSource();
-    m_player->stop();
+    stopMonitoring();
+    if (m_player)
+        m_player->stop();
+    if (m_capture)
+        m_capture->stop();
     if (!m_tempPath.isEmpty() && m_isTemporary)
         QFile::remove(m_tempPath);
 }
@@ -279,11 +292,6 @@ void MainWindow::createCentralWidget()
     deviceForm->addRow(tr("Input"), m_inputCombo);
     deviceForm->addRow(tr("Output"), m_outputCombo);
     mainLayout->addLayout(deviceForm);
-    auto *monitorHint = new QLabel(
-        tr("Monitor sources are hidden by Qt; use module-remap-source if needed."));
-    monitorHint->setWordWrap(true);
-    monitorHint->setStyleSheet(QStringLiteral("color: gray; font-size: 11px;"));
-    mainLayout->addWidget(monitorHint);
 
     auto *volForm = new QFormLayout;
     m_inputVolumeSlider = new MarkedSlider(Qt::Horizontal);
@@ -344,8 +352,8 @@ void MainWindow::createCentralWidget()
 void MainWindow::loadSettings()
 {
     QSettings s;
-    m_pendingInputId = s.value(QStringLiteral("audio/inputId")).toString();
-    m_pendingOutputId = s.value(QStringLiteral("audio/outputId")).toString();
+    m_pendingInputName = s.value(QStringLiteral("audio/inputName")).toString();
+    m_pendingOutputName = s.value(QStringLiteral("audio/outputName")).toString();
     const int mic = s.value(QStringLiteral("audio/micGain"), 100).toInt();
     const int out = s.value(QStringLiteral("audio/playbackVolume"), 80).toInt();
     const bool loop = s.value(QStringLiteral("playback/loop"), false).toBool();
@@ -366,9 +374,9 @@ void MainWindow::saveSettings()
 {
     QSettings s;
     if (m_inputCombo->currentIndex() >= 0)
-        s.setValue(QStringLiteral("audio/inputId"), m_inputCombo->currentData().toByteArray());
+        s.setValue(QStringLiteral("audio/inputName"), m_inputCombo->currentData().toString());
     if (m_outputCombo->currentIndex() >= 0)
-        s.setValue(QStringLiteral("audio/outputId"), m_outputCombo->currentData().toByteArray());
+        s.setValue(QStringLiteral("audio/outputName"), m_outputCombo->currentData().toString());
     s.setValue(QStringLiteral("audio/micGain"), m_inputVolumeSlider->value());
     s.setValue(QStringLiteral("audio/playbackVolume"), m_outputVolumeSlider->value());
     s.setValue(QStringLiteral("playback/loop"), m_loopAction->isChecked());
@@ -393,7 +401,10 @@ void MainWindow::clearDocument()
 {
     if (m_state == AppState::Recording)
         onRecord();
-    m_player->stop();
+    if (m_player)
+        m_player->stop();
+    if (m_capture)
+        m_capture->stop();
 
     if (!m_tempPath.isEmpty() && m_isTemporary)
         QFile::remove(m_tempPath);
@@ -464,13 +475,14 @@ void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &f
 
 void MainWindow::loadDocumentForPlayback(const QString &path)
 {
-    if (!m_player->load(path))
-        return;
     const WavFile::Info info = WavFile::load(path);
-    if (info.ok)
-        setWaveformFromPcm(info.pcm, info.format);
-    else
+    if (!info.ok) {
+        QMessageBox::warning(this, tr("Open"), info.error);
         m_waveform->clear();
+        return;
+    }
+    m_player->loadPcm(info.pcm, info.format);
+    setWaveformFromPcm(info.pcm, info.format);
 }
 
 void MainWindow::onNew()
@@ -478,7 +490,10 @@ void MainWindow::onNew()
     if (m_state == AppState::Recording)
         return;
     if (m_state == AppState::Playing || m_state == AppState::Paused)
+        if (m_player)
         m_player->stop();
+    if (m_capture)
+        m_capture->stop();
     if (!maybeSave())
         return;
     clearDocument();
@@ -489,7 +504,10 @@ void MainWindow::onOpen()
     if (m_state == AppState::Recording)
         return;
     if (m_state == AppState::Playing || m_state == AppState::Paused)
+        if (m_player)
         m_player->stop();
+    if (m_capture)
+        m_capture->stop();
     if (!maybeSave())
         return;
 
@@ -569,6 +587,7 @@ void MainWindow::onSaveAs()
 void MainWindow::onRecord()
 {
     if (m_state == AppState::Recording) {
+        m_capture->stop();
         m_wavWriter.close();
         m_recordAction->setChecked(false);
 
@@ -590,6 +609,7 @@ void MainWindow::onRecord()
             statusBar()->showMessage(
                 tr("Take saved to cache (%1)").arg(m_history.takes().size()), 4000);
         }
+        startMonitoring();
         setAppState(AppState::Ready);
         return;
     }
@@ -612,18 +632,15 @@ void MainWindow::onRecord()
     m_isTemporary = true;
     m_savedPath.clear();
 
-    if (!m_audioSource)
-        startAudioSource();
-    if (!m_audioSource) {
-        QMessageBox::critical(this, tr("Error"), tr("No audio input available."));
-        m_recordAction->setChecked(false);
-        return;
-    }
-
-    const QAudioFormat fmt = m_audioSource->format();
+    stopMonitoring();
+    QAudioFormat fmt;
+    fmt.setSampleFormat(QAudioFormat::Int16);
+    fmt.setSampleRate(48000);
+    fmt.setChannelCount(1);
     if (!m_wavWriter.open(m_tempPath, fmt)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not open WAV file for writing."));
         m_recordAction->setChecked(false);
+        startMonitoring();
         return;
     }
 
@@ -633,6 +650,15 @@ void MainWindow::onRecord()
     markModified();
     setAppState(AppState::Recording);
     m_recordAction->setChecked(true);
+    m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
+    if (!m_capture->start(currentSourceName(), 48000, 1)) {
+        QMessageBox::critical(this, tr("Error"), tr("Could not open PulseAudio source for recording."));
+        m_wavWriter.close();
+        m_recordAction->setChecked(false);
+        setAppState(AppState::Ready);
+        startMonitoring();
+        return;
+    }
     if (m_history.takes().size() > 0)
         statusBar()->showMessage(
             tr("Recording… (previous takes remain in cache, %1 total)")
@@ -662,13 +688,17 @@ void MainWindow::onPlay()
         return;
     }
 
-    if (m_player->path() != path) {
-        if (!m_player->load(path)) {
+    {
+        const WavFile::Info info = WavFile::load(path);
+        if (!info.ok) {
+            QMessageBox::warning(this, tr("Play"), info.error);
             m_playAction->setChecked(false);
             return;
         }
+        m_player->loadPcm(info.pcm, info.format);
     }
-    ensureInputMonitoring(false);
+    stopMonitoring();
+    m_player->setSinkName(currentSinkName());
     m_player->play();
 }
 
@@ -679,7 +709,10 @@ void MainWindow::onStop()
         return;
     }
     if (m_state == AppState::Playing || m_state == AppState::Paused) {
+        if (m_player)
         m_player->stop();
+    if (m_capture)
+        m_capture->stop();
         m_seekSlider->setValue(0);
         m_waveform->setPlaybackPosition(0.0);
         updateTimeLabel();
@@ -765,7 +798,10 @@ void MainWindow::onUndo()
     if (m_state == AppState::Recording)
         return;
     if (m_state == AppState::Playing || m_state == AppState::Paused)
+        if (m_player)
         m_player->stop();
+    if (m_capture)
+        m_capture->stop();
     const QString path = m_history.previous();
     if (path.isEmpty())
         return;
@@ -785,7 +821,10 @@ void MainWindow::onRedo()
     if (m_state == AppState::Recording)
         return;
     if (m_state == AppState::Playing || m_state == AppState::Paused)
+        if (m_player)
         m_player->stop();
+    if (m_capture)
+        m_capture->stop();
     const QString path = m_history.next();
     if (path.isEmpty())
         return;
@@ -805,7 +844,10 @@ void MainWindow::onHistory()
     if (m_state == AppState::Recording)
         return;
     if (m_state == AppState::Playing || m_state == AppState::Paused)
+        if (m_player)
         m_player->stop();
+    if (m_capture)
+        m_capture->stop();
 
     m_history.reload();
     HistoryDialog dlg(m_history.takes(), m_history.currentIndex(),
@@ -857,54 +899,66 @@ void MainWindow::onAbout()
 {
     QMessageBox::about(this, tr("About QWavRec"),
         tr("<h3>QWavRec</h3>"
-           "<p>Simple WAV recorder/player (QAudioSource / QAudioSink).</p>"
-           "<p>Takes are archived under <code>~/.cache/qwavrec</code>. "
-           "Undo/Redo steps through them. Normalize peak-scales without clipping.</p>"
+           "<p>Simple WAV recorder/player using <b>PulseAudio</b> "
+           "(sources including monitors, and sinks).</p>"
+           "<p>Takes are archived under <code>~/.cache/qwavrec</code>.</p>"
            "<p>Version %1 · GPL-3.0-or-later</p>")
             .arg(QApplication::applicationVersion()));
 }
 
-void MainWindow::updateAudioDevices()
+void MainWindow::refreshDevices()
 {
-    QByteArray curIn = m_pendingInputId.toUtf8();
-    QByteArray curOut = m_pendingOutputId.toUtf8();
+    QString curIn = m_pendingInputName;
+    QString curOut = m_pendingOutputName;
     if (curIn.isEmpty() && m_inputCombo->currentIndex() >= 0)
-        curIn = m_inputCombo->currentData().toByteArray();
+        curIn = m_inputCombo->currentData().toString();
     if (curOut.isEmpty() && m_outputCombo->currentIndex() >= 0)
-        curOut = m_outputCombo->currentData().toByteArray();
+        curOut = m_outputCombo->currentData().toString();
 
     m_inputCombo->blockSignals(true);
     m_outputCombo->blockSignals(true);
     m_inputCombo->clear();
     int selIn = 0, i = 0;
-    for (const QAudioDevice &dev : QMediaDevices::audioInputs()) {
-        m_inputCombo->addItem(dev.description(), dev.id());
-        if (dev.id() == curIn || (curIn.isEmpty() && dev.isDefault()))
+    const auto sources = PulseDevices::sources();
+    for (const PulseDevice &dev : sources) {
+        QString label = dev.description;
+        if (dev.isMonitor)
+            label += tr(" [monitor]");
+        if (dev.isDefault)
+            label += tr(" (default)");
+        m_inputCombo->addItem(label, dev.name);
+        if (dev.name == curIn || (curIn.isEmpty() && dev.isDefault))
             selIn = i;
         ++i;
     }
-    if (m_inputCombo->count()) {
+    if (m_inputCombo->count())
         m_inputCombo->setCurrentIndex(selIn);
-        onInputDeviceChanged(selIn);
-    }
 
     m_outputCombo->clear();
     int selOut = 0;
     i = 0;
-    for (const QAudioDevice &dev : QMediaDevices::audioOutputs()) {
-        m_outputCombo->addItem(dev.description(), dev.id());
-        if (dev.id() == curOut || (curOut.isEmpty() && dev.isDefault()))
+    const auto sinks = PulseDevices::sinks();
+    for (const PulseDevice &dev : sinks) {
+        QString label = dev.description;
+        if (dev.isDefault)
+            label += tr(" (default)");
+        m_outputCombo->addItem(label, dev.name);
+        if (dev.name == curOut || (curOut.isEmpty() && dev.isDefault))
             selOut = i;
         ++i;
     }
-    if (m_outputCombo->count()) {
+    if (m_outputCombo->count())
         m_outputCombo->setCurrentIndex(selOut);
-        onOutputDeviceChanged(selOut);
-    }
+
     m_inputCombo->blockSignals(false);
     m_outputCombo->blockSignals(false);
-    m_pendingInputId.clear();
-    m_pendingOutputId.clear();
+    m_pendingInputName.clear();
+    m_pendingOutputName.clear();
+
+    if (m_inputCombo->count())
+        onInputDeviceChanged(m_inputCombo->currentIndex());
+    if (m_outputCombo->count())
+        onOutputDeviceChanged(m_outputCombo->currentIndex());
 }
 
 void MainWindow::onInputDeviceChanged(int index)
@@ -912,28 +966,39 @@ void MainWindow::onInputDeviceChanged(int index)
     Q_UNUSED(index);
     if (m_state == AppState::Recording)
         onRecord();
-    startAudioSource();
+    if (m_state == AppState::Ready || m_state == AppState::Error)
+        startMonitoring();
     if (!m_restoringSettings)
         saveSettings();
 }
 
 void MainWindow::onOutputDeviceChanged(int index)
 {
-    if (index < 0) return;
-    const QByteArray id = m_outputCombo->itemData(index).toByteArray();
-    for (const QAudioDevice &dev : QMediaDevices::audioOutputs()) {
-        if (dev.id() == id) {
-            m_player->setDevice(dev);
-            break;
-        }
-    }
+    Q_UNUSED(index);
+    if (m_player)
+        m_player->setSinkName(currentSinkName());
     if (!m_restoringSettings)
         saveSettings();
 }
 
+QString MainWindow::currentSourceName() const
+{
+    if (m_inputCombo->currentIndex() < 0)
+        return {};
+    return m_inputCombo->currentData().toString();
+}
+
+QString MainWindow::currentSinkName() const
+{
+    if (m_outputCombo->currentIndex() < 0)
+        return {};
+    return m_outputCombo->currentData().toString();
+}
+
 void MainWindow::onInputVolumeChanged(int value)
 {
-    m_micGain = value / 100.0;
+    if (m_capture)
+        m_capture->setGain(value / 100.0);
     updateMicGainLabel();
     if (!m_restoringSettings)
         saveSettings();
@@ -958,99 +1023,35 @@ void MainWindow::updateMicGainLabel()
         : QString());
 }
 
-void MainWindow::startAudioSource()
+void MainWindow::startMonitoring()
 {
-    stopAudioSource();
-    QAudioDevice device;
-    if (m_inputCombo->currentIndex() >= 0) {
-        const QByteArray id = m_inputCombo->currentData().toByteArray();
-        for (const QAudioDevice &d : QMediaDevices::audioInputs())
-            if (d.id() == id) { device = d; break; }
-    }
-    if (device.isNull())
-        device = QMediaDevices::defaultAudioInput();
-    if (device.isNull())
+    if (m_state == AppState::Recording)
         return;
-
-    QAudioFormat format;
-    format.setSampleFormat(QAudioFormat::Int16);
-    format.setSampleRate(48000);
-    format.setChannelCount(1);
-    if (!device.isFormatSupported(format)) {
-        format = device.preferredFormat();
-        QAudioFormat try16 = format;
-        try16.setSampleFormat(QAudioFormat::Int16);
-        if (device.isFormatSupported(try16))
-            format = try16;
-    }
-
-    m_audioSource = new QAudioSource(device, format, this);
-    m_audioSourceDevice = m_audioSource->start();
-    if (m_audioSourceDevice)
-        connect(m_audioSourceDevice, &QIODevice::readyRead, this, &MainWindow::onAudioSourceReadyRead);
-}
-
-void MainWindow::stopAudioSource()
-{
-    if (m_audioSource) {
-        m_audioSource->stop();
-        m_audioSource->deleteLater();
-        m_audioSource = nullptr;
-        m_audioSourceDevice = nullptr;
-    }
-    m_inputMeter->setLevel(0.0);
-}
-
-void MainWindow::ensureInputMonitoring(bool on)
-{
-    if (on) {
-        if (!m_audioSource)
-            startAudioSource();
-    } else {
-        // Keep capture open while recording
-        if (m_state != AppState::Recording)
-            stopAudioSource();
-    }
-}
-
-float MainWindow::processCaptureBuffer(QByteArray &data, const QAudioFormat &fmt)
-{
-    float peak = 0.f;
-    if (fmt.sampleFormat() == QAudioFormat::Int16) {
-        auto *s = reinterpret_cast<qint16 *>(data.data());
-        const int n = data.size() / int(sizeof(qint16));
-        for (int i = 0; i < n; ++i) {
-            float v = s[i] / 32768.f * float(m_micGain);
-            v = qBound(-1.f, v, 1.f);
-            peak = qMax(peak, qAbs(v));
-            s[i] = qint16(v * 32767.f);
-        }
-    } else if (fmt.sampleFormat() == QAudioFormat::Float) {
-        auto *s = reinterpret_cast<float *>(data.data());
-        const int n = data.size() / int(sizeof(float));
-        for (int i = 0; i < n; ++i) {
-            float v = qBound(-1.f, s[i] * float(m_micGain), 1.f);
-            peak = qMax(peak, qAbs(v));
-            s[i] = v;
-        }
-    }
-    return peak;
-}
-
-void MainWindow::onAudioSourceReadyRead()
-{
-    if (!m_audioSourceDevice || !m_audioSource)
+    stopMonitoring();
+    if (!m_capture)
         return;
-    QByteArray data = m_audioSourceDevice->readAll();
-    if (data.isEmpty())
+    m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
+    if (!m_capture->start(currentSourceName(), 48000, 1)) {
+        statusBar()->showMessage(tr("Could not open capture device"), 3000);
         return;
+    }
+    m_monitoring = true;
+}
 
-    const QAudioFormat fmt = m_audioSource->format();
-    const float peak = processCaptureBuffer(data, fmt);
+void MainWindow::stopMonitoring()
+{
+    if (m_capture)
+        m_capture->stop();
+    m_monitoring = false;
+    if (m_inputMeter)
+        m_inputMeter->setLevel(0.0);
+}
+
+void MainWindow::onCaptureSamples(const QByteArray &pcm, float peak)
+{
     m_inputMeter->setLevel(qreal(peak));
-
     if (m_state == AppState::Recording && m_wavWriter.isOpen()) {
-        m_wavWriter.write(data.constData(), data.size());
+        m_wavWriter.write(pcm.constData(), pcm.size());
         m_liveRecordPeaks.append(peak);
         if (m_liveRecordPeaks.size() > 800) {
             QVector<float> reduced;
@@ -1066,20 +1067,36 @@ void MainWindow::onAudioSourceReadyRead()
     }
 }
 
-void MainWindow::onPlayerStateChanged(WavPlayer::State state)
+void MainWindow::onCaptureError(const QString &msg)
+{
+    QMessageBox::critical(this, tr("Capture Error"), msg);
+    if (m_state == AppState::Recording)
+        onRecord();
+}
+
+void MainWindow::onWaveformSeek(qreal pos)
+{
+    if (!hasDocument() || m_duration <= 0 || m_state == AppState::Recording)
+        return;
+    const int ms = int(pos * m_duration);
+    m_seekSlider->setValue(ms);
+    onSeek(ms);
+}
+
+void MainWindow::onPlayerStateChanged(PulsePlayback::State state)
 {
     switch (state) {
-    case WavPlayer::Playing:
+    case PulsePlayback::Playing:
         setAppState(AppState::Playing);
         m_playAction->setChecked(true);
         m_playAction->setIcon(themeIcon(QStringLiteral("media-playback-pause"), QStyle::SP_MediaPause));
         break;
-    case WavPlayer::Paused:
+    case PulsePlayback::Paused:
         setAppState(AppState::Paused);
         m_playAction->setChecked(true);
         m_playAction->setIcon(themeIcon(QStringLiteral("media-playback-start"), QStyle::SP_MediaPlay));
         break;
-    case WavPlayer::Stopped:
+    case PulsePlayback::Stopped:
         if (m_state != AppState::Recording) {
             setAppState(AppState::Ready);
             m_playAction->setChecked(false);
@@ -1088,7 +1105,7 @@ void MainWindow::onPlayerStateChanged(WavPlayer::State state)
             m_waveform->setPlaybackPosition(0.0);
             updateTimeLabel();
             m_outputMeter->setLevel(0.0);
-            ensureInputMonitoring(true);
+            startMonitoring();
         }
         break;
     }

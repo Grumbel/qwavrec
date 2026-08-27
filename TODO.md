@@ -11,9 +11,11 @@ deferred to follow-up commits.
 
 ### Monitors (PulseAudio / PipeWire)
 
-**Still not listed — this is expected with the current stack.**
+**Resolved in pulse backend:** sources are listed via libpulse,
+including monitors (`monitor_of_sink`). Input combo shows a
+`[monitor]` tag.
 
-Qt Multimedia (since ~6.4) **deliberately filters out** PulseAudio
+~~Qt Multimedia (since ~6.4) **deliberately filters out** PulseAudio
 sources where `monitor_of_sink != PA_INVALID_INDEX`. The same idea
 applies on the PipeWire backend: only “real” capture sources
 (microphones, etc.) appear in `QMediaDevices::audioInputs()`.

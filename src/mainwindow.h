@@ -7,15 +7,13 @@
 #include <QMainWindow>
 #include <QStyle>
 #include <QIcon>
-#include <QMediaDevices>
-#include <QAudioSource>
-#include <QIODevice>
 #include <QVector>
 #include <QElapsedTimer>
+#include <QAudioFormat>
 
 #include "wavwriter.h"
-#include "wavplayer.h"
 #include "recordinghistory.h"
+#include "pulsebackend.h"
 
 class QComboBox;
 class QLabel;
@@ -36,7 +34,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 
 private slots:
-    void updateAudioDevices();
+    void refreshDevices();
     void onInputDeviceChanged(int index);
     void onOutputDeviceChanged(int index);
     void onInputVolumeChanged(int value);
@@ -57,13 +55,15 @@ private slots:
     void onRedo();
     void onHistory();
 
-    void onPlayerStateChanged(WavPlayer::State state);
+    void onPlayerStateChanged(PulsePlayback::State state);
     void onPlayerPosition(qint64 ms);
     void onPlayerDuration(qint64 ms);
     void onPlayerError(const QString &msg);
     void onSeek(int value);
+    void onWaveformSeek(qreal pos);
 
-    void onAudioSourceReadyRead();
+    void onCaptureSamples(const QByteArray &pcm, float peak);
+    void onCaptureError(const QString &msg);
 
 private:
     enum class AppState { Ready, Playing, Paused, Recording, Error };
@@ -80,10 +80,8 @@ private:
     QString formatTime(qint64 ms) const;
     QIcon themeIcon(const QString &name, QStyle::StandardPixmap fallback) const;
 
-    void startAudioSource();
-    void stopAudioSource();
-    void ensureInputMonitoring(bool on);
-    float processCaptureBuffer(QByteArray &data, const QAudioFormat &fmt);
+    void startMonitoring();
+    void stopMonitoring();
 
     bool maybeSave();
     void clearDocument();
@@ -97,6 +95,9 @@ private:
     void loadSettings();
     void saveSettings();
     bool normalizeCurrentFile();
+
+    QString currentSourceName() const;
+    QString currentSinkName() const;
 
     QAction *m_newAction = nullptr;
     QAction *m_openAction = nullptr;
@@ -125,16 +126,13 @@ private:
     LevelMeter *m_outputMeter = nullptr;
     WaveformWidget *m_waveform = nullptr;
 
-    QMediaDevices m_devices;
-    WavPlayer *m_player = nullptr;
+    PulseCapture *m_capture = nullptr;
+    PulsePlayback *m_player = nullptr;
     RecordingHistory m_history;
-
-    QAudioSource *m_audioSource = nullptr;
-    QIODevice *m_audioSourceDevice = nullptr;
     WavWriter m_wavWriter;
-    qreal m_micGain = 1.0;
 
     QVector<float> m_liveRecordPeaks;
+    QVector<float> m_rawPeaks;
 
     QString m_savedPath;
     QString m_tempPath;
@@ -146,11 +144,11 @@ private:
     bool m_seeking = false;
     QElapsedTimer m_recordTimer;
 
-    QString m_pendingInputId;
-    QString m_pendingOutputId;
+    QString m_pendingInputName;
+    QString m_pendingOutputName;
     bool m_restoringSettings = false;
     bool m_autoScaleWaveform = false;
-    QVector<float> m_rawPeaks;
+    bool m_monitoring = false;
 };
 
 #endif

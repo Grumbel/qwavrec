@@ -6,18 +6,20 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPainterPath>
+#include <QMouseEvent>
 
 WaveformWidget::WaveformWidget(QWidget *parent)
     : QWidget(parent)
 {
     setMinimumHeight(64);
     setMinimumWidth(200);
+    setCursor(Qt::PointingHandCursor);
 }
 
 void WaveformWidget::setPeaks(const QVector<float> &peaks)
 {
     if (m_peaks == peaks)
-        return; // avoid needless repaint when unchanged
+        return;
     m_peaks = peaks;
     update();
 }
@@ -40,6 +42,20 @@ void WaveformWidget::setPlaybackPosition(qreal pos)
     update();
 }
 
+void WaveformWidget::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && !m_peaks.isEmpty()) {
+        const QRect r = rect().adjusted(1, 1, -1, -1);
+        if (r.width() > 0) {
+            const qreal pos = qBound(0.0, double(event->position().x() - r.left()) / r.width(), 1.0);
+            m_playbackPos = pos;
+            update();
+            emit seekRequested(pos);
+        }
+    }
+    QWidget::mousePressEvent(event);
+}
+
 QSize WaveformWidget::sizeHint() const { return QSize(400, 80); }
 QSize WaveformWidget::minimumSizeHint() const { return QSize(200, 48); }
 
@@ -57,10 +73,6 @@ void WaveformWidget::paintEvent(QPaintEvent *event)
     p.setPen(QPen(QColor(20, 50, 30), 1, Qt::DotLine));
     const int midY = r.center().y();
     p.drawLine(r.left(), midY, r.right(), midY);
-    for (int i = 1; i < 4; ++i) {
-        const int y = r.top() + (r.height() * i) / 4;
-        p.drawLine(r.left(), y, r.right(), y);
-    }
 
     if (m_peaks.isEmpty()) {
         p.setPen(QColor(80, 120, 90));
@@ -92,7 +104,7 @@ void WaveformWidget::paintEvent(QPaintEvent *event)
     p.setBrush(Qt::NoBrush);
     p.drawPath(path);
 
-    if (m_playbackPos > 0.0 && m_playbackPos < 1.0) {
+    if (m_playbackPos >= 0.0 && m_playbackPos <= 1.0) {
         const int cx = r.left() + static_cast<int>(m_playbackPos * r.width());
         p.setPen(QPen(QColor(255, 200, 50), 2));
         p.drawLine(cx, r.top() + 1, cx, r.bottom() - 1);
