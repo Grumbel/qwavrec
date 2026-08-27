@@ -52,6 +52,15 @@ private slots:
     void onPlay();
     void onStop();
     void onNormalize();
+    void onCut();
+    void onCopy();
+    void onPaste();
+    void onDeleteSelection();
+    void onCropToSelection();
+    void onEditUndo();
+    void onEditRedo();
+    void onWaveformContextMenu(const QPoint &globalPos);
+    void onInsertRecordToggled(bool on);
     void onLoopToggled(bool on);
     void onAutoScaleWaveformToggled(bool on);
     void onAbout();
@@ -106,6 +115,12 @@ private:
     void loadSettings();
     void saveSettings();
     bool normalizeCurrentFile();
+    void pushEditUndo(const QString &label);
+    void applyDocumentPcm(const QByteArray &pcm, const QAudioFormat &fmt);
+    bool writeDocumentPcm(const QByteArray &pcm, const QAudioFormat &fmt);
+    QByteArray selectionPcm(const QByteArray &pcm, const QAudioFormat &fmt,
+                           qreal a, qreal b) const;
+    void updateEditActions();
 
     QString currentSourceName() const;
     QString currentSinkName() const;
@@ -125,6 +140,14 @@ private:
     QAction *m_redoAction = nullptr;
     QAction *m_autoScaleAction = nullptr;
     QAction *m_historyAction = nullptr;
+    QAction *m_cutAction = nullptr;
+    QAction *m_copyAction = nullptr;
+    QAction *m_pasteAction = nullptr;
+    QAction *m_deleteSelAction = nullptr;
+    QAction *m_cropAction = nullptr;
+    QAction *m_editUndoAction = nullptr;
+    QAction *m_editRedoAction = nullptr;
+    QAction *m_insertRecordAction = nullptr;
 
     QComboBox *m_inputCombo = nullptr;
     QComboBox *m_outputCombo = nullptr;
@@ -147,6 +170,14 @@ private:
     QVector<float> m_liveRecordPeaks;
     QVector<float> m_rawPeaks;
     QByteArray m_recordPcm; // PCM accumulated during current take (GUI thread)
+    QByteArray m_clipPcm;
+    QAudioFormat m_clipFormat;
+    struct EditSnap { QByteArray pcm; QAudioFormat format; QString label; };
+    QVector<EditSnap> m_editUndo;
+    QVector<EditSnap> m_editRedo;
+    static const int kMaxEditUndo = 20;
+    bool m_insertRecord = false;
+    qint64 m_insertAtMs = 0;
 
     QString m_savedPath;
     QString m_tempPath;

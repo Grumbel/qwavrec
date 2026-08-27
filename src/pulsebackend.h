@@ -104,6 +104,9 @@ public:
     ~PulsePlayback() override;
 
     bool loadPcm(const QByteArray &pcm, const QAudioFormat &format);
+    /** Copy of loaded PCM (for edit operations). */
+    QByteArray pcm() const;
+    QAudioFormat format() const;
     void play();
     void pause();
     void stop();

@@ -27,6 +27,7 @@ public:
 signals:
     void seekRequested(qreal pos);
     void selectionChanged(qreal start, qreal end); // end<=start means cleared
+    void contextMenuRequested(const QPoint &globalPos);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -34,19 +35,30 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
 
 private:
+    enum class Hit { None, EdgeA, EdgeB, Interior };
+    enum class Drag { None, NewSelection, EdgeA, EdgeB };
+
     qreal posFromX(qreal x) const;
+    qreal xFromPos(qreal pos) const;
+    Hit hitTest(qreal x) const;
+    void setHover(Hit h);
+    /** Edge grab distance in widget pixels. */
+    static constexpr qreal kEdgePx = 8.0;
 
     QVector<float> m_peaks;
     qreal m_playbackPos = 0.0;
     qreal m_selStart = 0.0;
     qreal m_selEnd = 0.0;
-    bool m_dragging = false;
+    Drag m_drag = Drag::None;
     qreal m_dragAnchor = 0.0;
     bool m_moved = false;
+    Hit m_hover = Hit::None;
 };
 
 #endif

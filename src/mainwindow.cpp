@@ -100,6 +100,7 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::onOutputDeviceChanged);
     connect(m_waveform, &WaveformWidget::seekRequested, this, &MainWindow::onWaveformSeek);
     connect(m_waveform, &WaveformWidget::selectionChanged, this, &MainWindow::onSelectionChanged);
+    connect(m_waveform, &WaveformWidget::contextMenuRequested, this, &MainWindow::onWaveformContextMenu);
     connect(m_inputVolumeSlider, &QSlider::valueChanged, this, &MainWindow::onInputVolumeChanged);
     connect(m_outputVolumeSlider, &QSlider::valueChanged, this, &MainWindow::onOutputVolumeChanged);
 
@@ -243,6 +244,52 @@ void MainWindow::createActions()
     m_normalizeAction->setStatusTip(tr("Peak-normalize the current recording without clipping"));
     connect(m_normalizeAction, &QAction::triggered, this, &MainWindow::onNormalize);
 
+    m_cutAction = new QAction(themeIcon(QStringLiteral("edit-cut"), QStyle::SP_FileDialogContentsView),
+                              tr("Cu&t"), this);
+    m_cutAction->setShortcut(QKeySequence::Cut);
+    m_cutAction->setStatusTip(tr("Cut the A–B selection to the clipboard"));
+    connect(m_cutAction, &QAction::triggered, this, &MainWindow::onCut);
+
+    m_copyAction = new QAction(themeIcon(QStringLiteral("edit-copy"), QStyle::SP_FileDialogDetailedView),
+                               tr("&Copy"), this);
+    m_copyAction->setShortcut(QKeySequence::Copy);
+    m_copyAction->setStatusTip(tr("Copy the A–B selection to the clipboard"));
+    connect(m_copyAction, &QAction::triggered, this, &MainWindow::onCopy);
+
+    m_pasteAction = new QAction(themeIcon(QStringLiteral("edit-paste"), QStyle::SP_DialogOpenButton),
+                                tr("&Paste"), this);
+    m_pasteAction->setShortcut(QKeySequence::Paste);
+    m_pasteAction->setStatusTip(tr("Paste clipboard audio at the playhead (or replace selection)"));
+    connect(m_pasteAction, &QAction::triggered, this, &MainWindow::onPaste);
+
+    m_deleteSelAction = new QAction(tr("&Delete Selection"), this);
+    m_deleteSelAction->setShortcut(QKeySequence::Delete);
+    m_deleteSelAction->setStatusTip(tr("Remove the A–B region"));
+    connect(m_deleteSelAction, &QAction::triggered, this, &MainWindow::onDeleteSelection);
+
+    m_cropAction = new QAction(tr("Crop to &Selection"), this);
+    m_cropAction->setStatusTip(tr("Keep only the A–B region (trim outside)"));
+    connect(m_cropAction, &QAction::triggered, this, &MainWindow::onCropToSelection);
+
+    m_editUndoAction = new QAction(themeIcon(QStringLiteral("edit-undo"), QStyle::SP_ArrowBack),
+                                   tr("&Undo"), this);
+    m_editUndoAction->setShortcut(QKeySequence::Undo);
+    m_editUndoAction->setStatusTip(tr("Undo the last edit"));
+    connect(m_editUndoAction, &QAction::triggered, this, &MainWindow::onEditUndo);
+
+    m_editRedoAction = new QAction(themeIcon(QStringLiteral("edit-redo"), QStyle::SP_ArrowForward),
+                                   tr("&Redo"), this);
+    m_editRedoAction->setShortcut(QKeySequence::Redo);
+    m_editRedoAction->setStatusTip(tr("Redo the last undone edit"));
+    connect(m_editRedoAction, &QAction::triggered, this, &MainWindow::onEditRedo);
+
+    m_insertRecordAction = new QAction(tr("Record &Insert"), this);
+    m_insertRecordAction->setCheckable(true);
+    m_insertRecordAction->setStatusTip(
+        tr("When checked, the next recording is inserted at the playhead instead of a new take"));
+    connect(m_insertRecordAction, &QAction::toggled, this, &MainWindow::onInsertRecordToggled);
+
+
     m_loopAction = new QAction(themeIcon(QStringLiteral("media-playlist-repeat"), QStyle::SP_BrowserReload),
                                tr("Loop"), this);
     m_loopAction->setStatusTip(tr("Repeat playback"));
@@ -269,10 +316,20 @@ void MainWindow::createMenus()
     fileMenu->addAction(m_quitAction);
 
     QMenu *editMenu = menuBar()->addMenu(tr("&Edit"));
+    editMenu->addAction(m_editUndoAction);
+    editMenu->addAction(m_editRedoAction);
+    editMenu->addSeparator();
+    editMenu->addAction(m_cutAction);
+    editMenu->addAction(m_copyAction);
+    editMenu->addAction(m_pasteAction);
+    editMenu->addAction(m_deleteSelAction);
+    editMenu->addAction(m_cropAction);
+    editMenu->addSeparator();
     editMenu->addAction(m_normalizeAction);
 
     QMenu *transportMenu = menuBar()->addMenu(tr("&Transport"));
     transportMenu->addAction(m_recordAction);
+    transportMenu->addAction(m_insertRecordAction);
     transportMenu->addAction(m_playAction);
     transportMenu->addAction(m_stopAction);
     transportMenu->addSeparator();
@@ -345,8 +402,9 @@ void MainWindow::createCentralWidget()
     mainLayout->addLayout(meterForm);
 
     m_waveform = new WaveformWidget;
-    m_waveform->setToolTip(tr("Drag to select region A–B (playback/loop limited to selection).\n"
-                              "Click to seek. Double-click to clear selection."));
+    m_waveform->setToolTip(tr("Drag near A or B to adjust edges.
+Drag elsewhere to select a new A–B region (limits play/loop).
+Click to seek. Double-click clears selection. Right-click for edit menu."));
     mainLayout->addWidget(m_waveform, 1);
 
     m_seekSlider = new QSlider(Qt::Horizontal);
@@ -457,6 +515,8 @@ void MainWindow::clearDocument()
     m_waveform->clear();
     m_liveRecordPeaks.clear();
     m_rawPeaks.clear();
+    m_editUndo.clear();
+    m_editRedo.clear();
     updateWindowTitle();
     setAppState(AppState::Ready);
 }
@@ -508,6 +568,9 @@ void MainWindow::loadDocumentForPlayback(const QString &path)
     m_player->clearPlayRange();
     setWaveformFromPcm(info.pcm, info.format);
     m_waveform->clearSelection();
+    m_editUndo.clear();
+    m_editRedo.clear();
+    updateEditActions();
 }
 
 void MainWindow::onNew()
@@ -616,11 +679,19 @@ void MainWindow::onRecord()
         return;
     }
 
-    if (m_state == AppState::Playing || m_state == AppState::Paused)
-        m_player->stop();
-
-    if (!m_tempPath.isEmpty() && m_isTemporary)
-        QFile::remove(m_tempPath);
+    // Capture insert point before stopping playback
+    m_insertAtMs = 0;
+    if (m_insertRecord && m_player && !m_player->pcm().isEmpty()) {
+        m_insertAtMs = m_player->position();
+        if (m_state == AppState::Playing || m_state == AppState::Paused)
+            m_player->stop();
+    } else {
+        if (m_state == AppState::Playing || m_state == AppState::Paused)
+            m_player->stop();
+        if (!m_tempPath.isEmpty() && m_isTemporary)
+            QFile::remove(m_tempPath);
+        m_savedPath.clear();
+    }
 
     QTemporaryFile tmp(QDir::temp().filePath(QStringLiteral("qwavrec-XXXXXX.wav")));
     tmp.setAutoRemove(false);
@@ -629,10 +700,13 @@ void MainWindow::onRecord()
         m_recordAction->setChecked(false);
         return;
     }
-    m_tempPath = tmp.fileName();
+    const QString recordPath = tmp.fileName();
     tmp.close();
-    m_isTemporary = true;
-    m_savedPath.clear();
+
+    if (!m_insertRecord) {
+        m_tempPath = recordPath;
+        m_isTemporary = true;
+    }
 
     // Keep the same capture stream — just enable PCM queue
     if (!m_monitoring || !m_capture->isRunning()) {
@@ -651,26 +725,31 @@ void MainWindow::onRecord()
     fmt.setSampleFormat(QAudioFormat::Int16);
     fmt.setSampleRate(48000);
     fmt.setChannelCount(1);
-    if (!m_wavWriter.open(m_tempPath, fmt)) {
+    if (!m_wavWriter.open(recordPath, fmt)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not open WAV file for writing."));
         m_recordAction->setChecked(false);
         return;
     }
+    // Stash path for finishRecordingStop when inserting
+    if (m_insertRecord)
+        m_tempPath = recordPath; // temporary capture file; will splice then rewrite doc
 
     m_liveRecordPeaks.clear();
     m_recordPcm.clear();
-    m_waveform->clear();
+    if (!m_insertRecord)
+        m_waveform->clear();
     m_recordTimer.restart();
     markModified();
     setAppState(AppState::Recording);
     m_recordAction->setChecked(true);
     m_capture->setRecording(true);
-    if (m_history.takes().size() > 0)
+    if (m_insertRecord)
+        statusBar()->showMessage(tr("Insert recording at %1…").arg(formatTime(m_insertAtMs)), 0);
+    else if (m_history.takes().size() > 0)
         statusBar()->showMessage(
             tr("Recording… (previous takes remain in cache, %1 total)")
                 .arg(m_history.takes().size()), 0);
 }
-
 
 void MainWindow::finishRecordingStop()
 {
@@ -689,31 +768,64 @@ void MainWindow::finishRecordingStop()
     m_wavWriter.close();
     m_recordAction->setChecked(false);
 
-    // 3) Waveform from live peaks — no disk read.
-    if (!m_liveRecordPeaks.isEmpty()) {
+    const bool inserting = m_insertRecord && !m_recordPcm.isEmpty();
+    QByteArray basePcm;
+    QAudioFormat baseFmt;
+    if (inserting && m_player) {
+        basePcm = m_player->pcm();
+        baseFmt = m_player->format();
+    }
+
+    // 3) Waveform from live peaks — no disk read (new take only).
+    if (!inserting && !m_liveRecordPeaks.isEmpty()) {
         m_rawPeaks = m_liveRecordPeaks;
         m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
     }
 
-    // 4) Unlock UI immediately (this is what the user is waiting for).
+    // 4) Unlock UI immediately.
     setAppState(AppState::Ready);
     m_monitoring = m_capture && m_capture->isRunning();
 
-    if (m_tempPath.isEmpty() || m_recordPcm.isEmpty()) {
-        if (!m_tempPath.isEmpty()) {
+    if (m_recordPcm.isEmpty()) {
+        if (!m_tempPath.isEmpty() && m_isTemporary)
             QFile::remove(m_tempPath);
+        if (!inserting)
             m_tempPath.clear();
-        }
         m_recordPcm.clear();
         statusBar()->showMessage(tr("Recording produced no audio data."), 3000);
         return;
     }
 
-    // 5) Hand PCM to player from memory — no WavFile::load on the GUI thread.
     QAudioFormat fmt;
     fmt.setSampleFormat(QAudioFormat::Int16);
     fmt.setSampleRate(48000);
     fmt.setChannelCount(1);
+
+    if (inserting && !basePcm.isEmpty()
+        && baseFmt.sampleFormat() == fmt.sampleFormat()
+        && baseFmt.sampleRate() == fmt.sampleRate()
+        && baseFmt.channelCount() == fmt.channelCount()) {
+        // Splice new capture at playhead into existing document
+        pushEditUndo(tr("Insert recording"));
+        const int bpf = fmt.bytesPerFrame();
+        const int frames = basePcm.size() / bpf;
+        int at = int(fmt.framesForDuration(m_insertAtMs * 1000));
+        at = qBound(0, at, frames);
+        QByteArray out;
+        out.reserve(basePcm.size() + m_recordPcm.size());
+        out.append(basePcm.constData(), at * bpf);
+        out.append(m_recordPcm);
+        out.append(basePcm.constData() + at * bpf, (frames - at) * bpf);
+        // Remove the temporary capture file path confusion
+        if (!m_tempPath.isEmpty())
+            QFile::remove(m_tempPath);
+        applyDocumentPcm(out, fmt);
+        m_recordPcm.clear();
+        statusBar()->showMessage(tr("Inserted recording at %1").arg(formatTime(m_insertAtMs)), 4000);
+        return;
+    }
+
+    // 5) Hand PCM to player from memory — no WavFile::load on the GUI thread.
     m_player->loadPcm(m_recordPcm, fmt);
     m_player->clearPlayRange();
     m_waveform->clearSelection();
@@ -721,9 +833,11 @@ void MainWindow::finishRecordingStop()
     m_seekSlider->setRange(0, int(m_duration));
     updateTimeLabel();
     updateWindowTitle();
+    m_editUndo.clear();
+    m_editRedo.clear();
+    updateEditActions();
 
-    // 6) Archive to cache on the next event-loop turn so the first paint of
-    //    "Ready" is not blocked by QFile::copy of the whole take.
+    // 6) Archive to cache on the next event-loop turn.
     const QString tempPath = m_tempPath;
     const bool isTemp = m_isTemporary;
     QTimer::singleShot(0, this, [this, tempPath, isTemp]() {
@@ -743,7 +857,6 @@ void MainWindow::finishRecordingStop()
         } else {
             statusBar()->showMessage(tr("Could not archive take to cache"), 4000);
         }
-        // Drop in-memory PCM only after archive attempt (player still holds its copy)
         m_recordPcm.clear();
     });
 }
@@ -813,59 +926,312 @@ void MainWindow::onNormalize()
 {
     if (m_state == AppState::Recording || m_state == AppState::Playing)
         return;
-    if (!hasDocument()) {
+    if (!hasDocument() || !m_player || m_player->pcm().isEmpty()) {
         QMessageBox::information(this, tr("QWavRec"), tr("Nothing to normalize."));
         return;
     }
-    if (normalizeCurrentFile()) {
-        loadDocumentForPlayback(documentPathForPlayback());
-        markModified();
-        statusBar()->showMessage(tr("Normalized to peak"), 3000);
-    } else {
+    QByteArray pcm = m_player->pcm();
+    const QAudioFormat fmt = m_player->format();
+    if (fmt.sampleFormat() != QAudioFormat::Int16) {
         QMessageBox::warning(this, tr("Normalize"),
             tr("Could not normalize this file.\n"
                "Only 16-bit PCM WAV is supported."));
+        return;
     }
+    pushEditUndo(tr("Normalize"));
+    if (!WavFile::peakNormalizeInt16(pcm)) {
+        m_editUndo.removeLast();
+        return;
+    }
+    applyDocumentPcm(pcm, fmt);
+    statusBar()->showMessage(tr("Normalized to peak"), 3000);
 }
 
 bool MainWindow::normalizeCurrentFile()
 {
-    const QString path = documentPathForPlayback();
-    if (path.isEmpty())
-        return false;
+    // Kept for any legacy callers; prefer onNormalize() in-memory path.
+    onNormalize();
+    return hasDocument();
+}
 
-    WavFile::Info info = WavFile::load(path);
-    if (!info.ok || info.format.sampleFormat() != QAudioFormat::Int16)
-        return false;
+void MainWindow::pushEditUndo(const QString &label)
+{
+    if (!m_player)
+        return;
+    EditSnap snap;
+    snap.pcm = m_player->pcm();
+    snap.format = m_player->format();
+    snap.label = label;
+    m_editUndo.append(snap);
+    while (m_editUndo.size() > kMaxEditUndo)
+        m_editUndo.removeFirst();
+    m_editRedo.clear();
+    updateEditActions();
+}
 
-    if (!WavFile::peakNormalizeInt16(info.pcm))
-        return false;
+void MainWindow::applyDocumentPcm(const QByteArray &pcm, const QAudioFormat &fmt)
+{
+    if (m_state == AppState::Playing || m_state == AppState::Paused)
+        m_player->stop();
+    m_player->loadPcm(pcm, fmt);
+    m_player->clearPlayRange();
+    setWaveformFromPcm(pcm, fmt);
+    m_waveform->clearSelection();
+    m_duration = m_player->duration();
+    m_seekSlider->setRange(0, int(m_duration));
+    m_seekSlider->setValue(0);
+    m_waveform->setPlaybackPosition(0.0);
+    updateTimeLabel();
+    writeDocumentPcm(pcm, fmt);
+    markModified();
+    updateWindowTitle();
+    updateEditActions();
+    applySelectionToPlayer();
+}
 
-    // Rewrite file via WavWriter
-    QTemporaryFile tmp(QDir::temp().filePath(QStringLiteral("qwavrec-norm-XXXXXX.wav")));
-    tmp.setAutoRemove(false);
-    if (!tmp.open())
-        return false;
-    tmp.close();
-
-    WavWriter writer;
-    if (!writer.open(tmp.fileName(), info.format)) {
-        QFile::remove(tmp.fileName());
-        return false;
+bool MainWindow::writeDocumentPcm(const QByteArray &pcm, const QAudioFormat &fmt)
+{
+    // Copy-on-write if current path is a cache take (do not mutate history files).
+    QString path = m_tempPath;
+    const bool inCache = !path.isEmpty() && path.startsWith(m_history.cacheDir());
+    if (path.isEmpty() || inCache || (!m_isTemporary && !m_savedPath.isEmpty() && path == m_savedPath)) {
+        QTemporaryFile tmp(QDir::temp().filePath(QStringLiteral("qwavrec-edit-XXXXXX.wav")));
+        tmp.setAutoRemove(false);
+        if (!tmp.open())
+            return false;
+        path = tmp.fileName();
+        tmp.close();
+        m_tempPath = path;
+        m_isTemporary = true;
+        // keep m_savedPath if user had an export target
     }
-    writer.write(info.pcm.constData(), info.pcm.size());
-    writer.close();
-
-    const QString archived = m_history.archiveTake(tmp.fileName());
-    QFile::remove(tmp.fileName());
-    if (archived.isEmpty())
+    WavWriter writer;
+    if (!writer.open(path, fmt))
         return false;
-
-    m_tempPath = archived;
-    m_isTemporary = false;
-    m_savedPath.clear();
+    writer.write(pcm.constData(), pcm.size());
+    writer.close();
     return true;
 }
+
+QByteArray MainWindow::selectionPcm(const QByteArray &pcm, const QAudioFormat &fmt,
+                                    qreal a, qreal b) const
+{
+    const int bpf = fmt.bytesPerFrame();
+    if (bpf <= 0 || pcm.isEmpty() || b <= a)
+        return {};
+    const int frames = pcm.size() / bpf;
+    int fa = qBound(0, int(a * frames), frames);
+    int fb = qBound(0, int(b * frames), frames);
+    if (fb < fa)
+        qSwap(fa, fb);
+    return pcm.mid(fa * bpf, (fb - fa) * bpf);
+}
+
+void MainWindow::updateEditActions()
+{
+    const bool idle = (m_state == AppState::Ready || m_state == AppState::Paused
+                       || m_state == AppState::Error);
+    const bool hasDoc = hasDocument() && m_player && !m_player->pcm().isEmpty();
+    const bool hasSel = m_waveform && m_waveform->hasSelection();
+    const bool canEdit = idle && hasDoc;
+    if (m_cutAction)
+        m_cutAction->setEnabled(canEdit && hasSel);
+    if (m_copyAction)
+        m_copyAction->setEnabled(canEdit && hasSel);
+    if (m_pasteAction)
+        m_pasteAction->setEnabled(canEdit && !m_clipPcm.isEmpty());
+    if (m_deleteSelAction)
+        m_deleteSelAction->setEnabled(canEdit && hasSel);
+    if (m_cropAction)
+        m_cropAction->setEnabled(canEdit && hasSel);
+    if (m_editUndoAction)
+        m_editUndoAction->setEnabled(idle && !m_editUndo.isEmpty());
+    if (m_editRedoAction)
+        m_editRedoAction->setEnabled(idle && !m_editRedo.isEmpty());
+    if (m_normalizeAction)
+        m_normalizeAction->setEnabled(canEdit);
+    if (m_insertRecordAction)
+        m_insertRecordAction->setEnabled(m_state != AppState::Recording);
+}
+
+void MainWindow::onCopy()
+{
+    if (!m_player || !m_waveform || !m_waveform->hasSelection())
+        return;
+    m_clipPcm = selectionPcm(m_player->pcm(), m_player->format(),
+                             m_waveform->selectionStart(), m_waveform->selectionEnd());
+    m_clipFormat = m_player->format();
+    updateEditActions();
+    statusBar()->showMessage(tr("Copied selection"), 2000);
+}
+
+void MainWindow::onCut()
+{
+    if (!m_player || !m_waveform || !m_waveform->hasSelection())
+        return;
+    onCopy();
+    onDeleteSelection();
+}
+
+void MainWindow::onDeleteSelection()
+{
+    if (!m_player || !m_waveform || !m_waveform->hasSelection())
+        return;
+    const QAudioFormat fmt = m_player->format();
+    const int bpf = fmt.bytesPerFrame();
+    if (bpf <= 0)
+        return;
+    QByteArray pcm = m_player->pcm();
+    const int frames = pcm.size() / bpf;
+    const int fa = qBound(0, int(m_waveform->selectionStart() * frames), frames);
+    const int fb = qBound(0, int(m_waveform->selectionEnd() * frames), frames);
+    pushEditUndo(tr("Delete selection"));
+    QByteArray out;
+    out.reserve(pcm.size() - (fb - fa) * bpf);
+    out.append(pcm.constData(), fa * bpf);
+    out.append(pcm.constData() + fb * bpf, (frames - fb) * bpf);
+    applyDocumentPcm(out, fmt);
+    statusBar()->showMessage(tr("Deleted selection"), 2000);
+}
+
+void MainWindow::onCropToSelection()
+{
+    if (!m_player || !m_waveform || !m_waveform->hasSelection())
+        return;
+    const QAudioFormat fmt = m_player->format();
+    QByteArray sel = selectionPcm(m_player->pcm(), fmt,
+                                  m_waveform->selectionStart(), m_waveform->selectionEnd());
+    if (sel.isEmpty())
+        return;
+    pushEditUndo(tr("Crop to selection"));
+    applyDocumentPcm(sel, fmt);
+    statusBar()->showMessage(tr("Cropped to selection"), 2000);
+}
+
+void MainWindow::onPaste()
+{
+    if (!m_player || m_clipPcm.isEmpty())
+        return;
+    const QAudioFormat fmt = m_player->format();
+    if (fmt.sampleFormat() != m_clipFormat.sampleFormat()
+        || fmt.sampleRate() != m_clipFormat.sampleRate()
+        || fmt.channelCount() != m_clipFormat.channelCount()) {
+        QMessageBox::warning(this, tr("Paste"),
+            tr("Clipboard audio format does not match the current document."));
+        return;
+    }
+    const int bpf = fmt.bytesPerFrame();
+    if (bpf <= 0)
+        return;
+    QByteArray pcm = m_player->pcm();
+    const int frames = pcm.size() / bpf;
+    int insertFrame = 0;
+    if (m_waveform->hasSelection()) {
+        // Replace selection
+        const int fa = qBound(0, int(m_waveform->selectionStart() * frames), frames);
+        const int fb = qBound(0, int(m_waveform->selectionEnd() * frames), frames);
+        pushEditUndo(tr("Paste (replace selection)"));
+        QByteArray out;
+        out.append(pcm.constData(), fa * bpf);
+        out.append(m_clipPcm);
+        out.append(pcm.constData() + fb * bpf, (frames - fb) * bpf);
+        applyDocumentPcm(out, fmt);
+    } else {
+        const qint64 posMs = m_player->position();
+        insertFrame = int(fmt.framesForDuration(posMs * 1000));
+        insertFrame = qBound(0, insertFrame, frames);
+        pushEditUndo(tr("Paste"));
+        QByteArray out;
+        out.append(pcm.constData(), insertFrame * bpf);
+        out.append(m_clipPcm);
+        out.append(pcm.constData() + insertFrame * bpf, (frames - insertFrame) * bpf);
+        applyDocumentPcm(out, fmt);
+    }
+    statusBar()->showMessage(tr("Pasted"), 2000);
+}
+
+void MainWindow::onEditUndo()
+{
+    if (m_editUndo.isEmpty() || !m_player)
+        return;
+    if (m_state == AppState::Recording || m_state == AppState::Playing)
+        return;
+    EditSnap cur;
+    cur.pcm = m_player->pcm();
+    cur.format = m_player->format();
+    cur.label = tr("Redo point");
+    m_editRedo.append(cur);
+    const EditSnap snap = m_editUndo.takeLast();
+    // apply without pushing undo
+    if (m_state == AppState::Paused)
+        m_player->stop();
+    m_player->loadPcm(snap.pcm, snap.format);
+    m_player->clearPlayRange();
+    setWaveformFromPcm(snap.pcm, snap.format);
+    m_waveform->clearSelection();
+    m_duration = m_player->duration();
+    m_seekSlider->setRange(0, int(m_duration));
+    writeDocumentPcm(snap.pcm, snap.format);
+    markModified();
+    updateWindowTitle();
+    updateEditActions();
+    statusBar()->showMessage(tr("Undo: %1").arg(snap.label), 2500);
+}
+
+void MainWindow::onEditRedo()
+{
+    if (m_editRedo.isEmpty() || !m_player)
+        return;
+    if (m_state == AppState::Recording || m_state == AppState::Playing)
+        return;
+    EditSnap cur;
+    cur.pcm = m_player->pcm();
+    cur.format = m_player->format();
+    cur.label = tr("Undo point");
+    m_editUndo.append(cur);
+    const EditSnap snap = m_editRedo.takeLast();
+    if (m_state == AppState::Paused)
+        m_player->stop();
+    m_player->loadPcm(snap.pcm, snap.format);
+    m_player->clearPlayRange();
+    setWaveformFromPcm(snap.pcm, snap.format);
+    m_waveform->clearSelection();
+    m_duration = m_player->duration();
+    m_seekSlider->setRange(0, int(m_duration));
+    writeDocumentPcm(snap.pcm, snap.format);
+    markModified();
+    updateWindowTitle();
+    updateEditActions();
+    statusBar()->showMessage(tr("Redo: %1").arg(snap.label), 2500);
+}
+
+void MainWindow::onWaveformContextMenu(const QPoint &globalPos)
+{
+    updateEditActions();
+    QMenu menu(this);
+    menu.addAction(m_editUndoAction);
+    menu.addAction(m_editRedoAction);
+    menu.addSeparator();
+    menu.addAction(m_cutAction);
+    menu.addAction(m_copyAction);
+    menu.addAction(m_pasteAction);
+    menu.addAction(m_deleteSelAction);
+    menu.addAction(m_cropAction);
+    menu.addSeparator();
+    menu.addAction(m_normalizeAction);
+    menu.exec(globalPos);
+}
+
+void MainWindow::onInsertRecordToggled(bool on)
+{
+    m_insertRecord = on;
+    if (!m_restoringSettings)
+        statusBar()->showMessage(
+            on ? tr("Insert record mode: next recording splices at the playhead")
+               : tr("Normal record mode: next recording starts a new take"),
+            3500);
+}
+
 
 void MainWindow::onLoopToggled(bool on)
 {
@@ -1243,6 +1609,7 @@ void MainWindow::onWaveformSeek(qreal pos)
 void MainWindow::onSelectionChanged(qreal start, qreal end)
 {
     applySelectionToPlayer();
+    updateEditActions();
     if (end > start + 1e-6 && m_duration > 0) {
         statusBar()->showMessage(
             tr("Selection A–B: %1 – %2")
@@ -1382,6 +1749,7 @@ void MainWindow::updateControls()
     m_outputCombo->setEnabled(!recording);
     // Seek whenever a document is loaded (scrub before/while paused play)
     m_seekSlider->setEnabled(hasDoc && !recording && m_duration > 0);
+    updateEditActions();
 }
 
 void MainWindow::updateTimeLabel()

@@ -322,6 +322,18 @@ bool PulsePlayback::loadPcm(const QByteArray &pcm, const QAudioFormat &format)
     return !pcm.isEmpty();
 }
 
+QByteArray PulsePlayback::pcm() const
+{
+    QMutexLocker lock(&m_mutex);
+    return m_pcm;
+}
+
+QAudioFormat PulsePlayback::format() const
+{
+    QMutexLocker lock(&m_mutex);
+    return m_format;
+}
+
 qint64 PulsePlayback::msToBytes(qint64 ms) const
 {
     if (m_format.sampleRate() <= 0)

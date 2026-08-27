@@ -7,6 +7,8 @@
 #include <QPaintEvent>
 #include <QPainterPath>
 #include <QMouseEvent>
+#include <QContextMenuEvent>
+#include <QtMath>
 
 WaveformWidget::WaveformWidget(QWidget *parent)
     : QWidget(parent)
@@ -15,6 +17,7 @@ WaveformWidget::WaveformWidget(QWidget *parent)
     setMinimumWidth(200);
     setCursor(Qt::PointingHandCursor);
     setMouseTracking(true);
+    setContextMenuPolicy(Qt::DefaultContextMenu);
 }
 
 void WaveformWidget::setPeaks(const QVector<float> &peaks)
@@ -72,27 +75,88 @@ qreal WaveformWidget::posFromX(qreal x) const
     return qBound(0.0, (x - r.left()) / r.width(), 1.0);
 }
 
+qreal WaveformWidget::xFromPos(qreal pos) const
+{
+    const QRect r = rect().adjusted(1, 1, -1, -1);
+    return r.left() + pos * r.width();
+}
+
+WaveformWidget::Hit WaveformWidget::hitTest(qreal x) const
+{
+    if (!hasSelection())
+        return Hit::None;
+    const qreal xa = xFromPos(m_selStart);
+    const qreal xb = xFromPos(m_selEnd);
+    if (qAbs(x - xa) <= kEdgePx)
+        return Hit::EdgeA;
+    if (qAbs(x - xb) <= kEdgePx)
+        return Hit::EdgeB;
+    if (x > xa && x < xb)
+        return Hit::Interior;
+    return Hit::None;
+}
+
+void WaveformWidget::setHover(Hit h)
+{
+    if (m_hover == h)
+        return;
+    m_hover = h;
+    if (h == Hit::EdgeA || h == Hit::EdgeB)
+        setCursor(Qt::SizeHorCursor);
+    else
+        setCursor(Qt::PointingHandCursor);
+    update();
+}
+
 void WaveformWidget::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton && !m_peaks.isEmpty()) {
-        m_dragging = true;
+        const qreal x = event->position().x();
+        const qreal p = posFromX(x);
+        const Hit hit = hitTest(x);
         m_moved = false;
-        m_dragAnchor = posFromX(event->position().x());
-        m_selStart = m_dragAnchor;
-        m_selEnd = m_dragAnchor;
-        update();
+        m_dragAnchor = p;
+
+        if (hit == Hit::EdgeA) {
+            m_drag = Drag::EdgeA;
+        } else if (hit == Hit::EdgeB) {
+            m_drag = Drag::EdgeB;
+        } else {
+            // New selection only when not near an edge
+            m_drag = Drag::NewSelection;
+            m_selStart = p;
+            m_selEnd = p;
+            update();
+        }
     }
     QWidget::mousePressEvent(event);
 }
 
 void WaveformWidget::mouseMoveEvent(QMouseEvent *event)
 {
-    if (m_dragging && !m_peaks.isEmpty()) {
-        const qreal p = posFromX(event->position().x());
+    const qreal x = event->position().x();
+    const qreal p = posFromX(x);
+
+    if (m_drag == Drag::None) {
+        if (!m_peaks.isEmpty())
+            setHover(hitTest(x));
+        QWidget::mouseMoveEvent(event);
+        return;
+    }
+
+    if (m_drag == Drag::NewSelection) {
         if (qAbs(p - m_dragAnchor) > 0.005)
             m_moved = true;
         m_selStart = qMin(m_dragAnchor, p);
         m_selEnd = qMax(m_dragAnchor, p);
+        update();
+    } else if (m_drag == Drag::EdgeA) {
+        m_moved = true;
+        m_selStart = qBound(0.0, p, m_selEnd - 1e-4);
+        update();
+    } else if (m_drag == Drag::EdgeB) {
+        m_moved = true;
+        m_selEnd = qBound(m_selStart + 1e-4, p, 1.0);
         update();
     }
     QWidget::mouseMoveEvent(event);
@@ -100,23 +164,20 @@ void WaveformWidget::mouseMoveEvent(QMouseEvent *event)
 
 void WaveformWidget::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && m_dragging) {
-        m_dragging = false;
-        if (!m_moved) {
-            // Click without drag → seek and clear selection
+    if (event->button() == Qt::LeftButton && m_drag != Drag::None) {
+        const Drag kind = m_drag;
+        m_drag = Drag::None;
+        if (kind == Drag::NewSelection && !m_moved) {
+            // Click without drag → seek, keep selection if any
             clearSelection();
-            m_playbackPos = m_dragAnchor;
-            update();
-            emit seekRequested(m_dragAnchor);
-        } else if (hasSelection()) {
-            emit selectionChanged(m_selStart, m_selEnd);
-            // Seek to region start
-            m_playbackPos = m_selStart;
-            update();
-            emit seekRequested(m_selStart);
-        } else {
-            clearSelection();
+            emit seekRequested(posFromX(event->position().x()));
+        } else if (kind == Drag::NewSelection || kind == Drag::EdgeA || kind == Drag::EdgeB) {
+            if (hasSelection())
+                emit selectionChanged(m_selStart, m_selEnd);
+            else
+                emit selectionChanged(0.0, 0.0);
         }
+        setHover(hitTest(event->position().x()));
     }
     QWidget::mouseReleaseEvent(event);
 }
@@ -129,73 +190,97 @@ void WaveformWidget::mouseDoubleClickEvent(QMouseEvent *event)
     QWidget::mouseDoubleClickEvent(event);
 }
 
-QSize WaveformWidget::sizeHint() const { return QSize(400, 80); }
-QSize WaveformWidget::minimumSizeHint() const { return QSize(200, 48); }
-
-void WaveformWidget::paintEvent(QPaintEvent *event)
+void WaveformWidget::leaveEvent(QEvent *event)
 {
-    Q_UNUSED(event);
+    setHover(Hit::None);
+    QWidget::leaveEvent(event);
+}
+
+void WaveformWidget::contextMenuEvent(QContextMenuEvent *event)
+{
+    emit contextMenuRequested(event->globalPos());
+    event->accept();
+}
+
+QSize WaveformWidget::sizeHint() const
+{
+    return QSize(400, 96);
+}
+
+QSize WaveformWidget::minimumSizeHint() const
+{
+    return QSize(200, 64);
+}
+
+void WaveformWidget::paintEvent(QPaintEvent *)
+{
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-
     const QRect r = rect().adjusted(1, 1, -1, -1);
-    p.fillRect(rect(), QColor(10, 20, 15));
-    p.setPen(QColor(40, 80, 50));
+    p.fillRect(rect(), QColor(20, 24, 20));
+    p.setPen(QColor(40, 50, 40));
     p.drawRect(r);
 
-    p.setPen(QPen(QColor(20, 50, 30), 1, Qt::DotLine));
-    const int midY = r.center().y();
-    p.drawLine(r.left(), midY, r.right(), midY);
-
     if (m_peaks.isEmpty()) {
-        p.setPen(QColor(80, 120, 90));
-        p.drawText(r, Qt::AlignCenter, tr("No recording"));
+        p.setPen(QColor(120, 140, 120));
+        p.drawText(r, Qt::AlignCenter, tr("No waveform"));
         return;
     }
 
-    // Selection highlight
+    // Selection fill
     if (hasSelection()) {
-        const int x0 = r.left() + int(m_selStart * r.width());
-        const int x1 = r.left() + int(m_selEnd * r.width());
+        const int x0 = int(xFromPos(m_selStart));
+        const int x1 = int(xFromPos(m_selEnd));
         p.fillRect(QRect(x0, r.top(), qMax(1, x1 - x0), r.height()),
-                    QColor(255, 200, 50, 50));
-        p.setPen(QPen(QColor(255, 180, 40), 1));
-        p.drawLine(x0, r.top(), x0, r.bottom());
-        p.drawLine(x1, r.top(), x1, r.bottom());
-        // A / B labels
-        p.setPen(QColor(255, 220, 80));
-        p.setFont(QFont(font().family(), 9, QFont::Bold));
-        p.drawText(x0 + 2, r.top() + 12, QStringLiteral("A"));
-        p.drawText(x1 - 10, r.top() + 12, QStringLiteral("B"));
+                    QColor(180, 160, 40, 70));
     }
 
     const int n = m_peaks.size();
-    const qreal step = r.width() / static_cast<qreal>(qMax(1, n));
-
-    QPainterPath path;
-    path.moveTo(r.left(), midY);
+    const qreal mid = r.center().y();
+    const qreal amp = r.height() * 0.45;
+    QPainterPath pathTop;
+    QPainterPath pathBot;
     for (int i = 0; i < n; ++i) {
-        const qreal v = m_peaks.at(i);
-        const qreal x = r.left() + (i + 0.5) * step;
-        path.lineTo(x, midY - (r.height() / 2.0 - 3) * v);
+        const qreal x = r.left() + (qreal(i) + 0.5) / n * r.width();
+        const qreal v = qBound(0.0, qreal(m_peaks.at(i)), 1.0) * amp;
+        if (i == 0) {
+            pathTop.moveTo(x, mid - v);
+            pathBot.moveTo(x, mid + v);
+        } else {
+            pathTop.lineTo(x, mid - v);
+            pathBot.lineTo(x, mid + v);
+        }
     }
-    for (int i = n - 1; i >= 0; --i) {
-        const qreal v = m_peaks.at(i);
-        const qreal x = r.left() + (i + 0.5) * step;
-        path.lineTo(x, midY + (r.height() / 2.0 - 3) * v);
+    p.setPen(QPen(QColor(40, 180, 70), 1.2));
+    p.drawPath(pathTop);
+    p.drawPath(pathBot);
+
+    // Selection edges (highlight hovered / active)
+    if (hasSelection()) {
+        auto drawEdge = [&](qreal pos, bool hot) {
+            const qreal x = xFromPos(pos);
+            p.setPen(QPen(hot ? QColor(255, 220, 60) : QColor(220, 200, 50), hot ? 3.0 : 2.0));
+            p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+            // Small grip ticks
+            p.setBrush(hot ? QColor(255, 220, 60) : QColor(220, 200, 50));
+            p.setPen(Qt::NoPen);
+            const qreal gy = r.center().y();
+            p.drawRect(QRectF(x - 3, gy - 10, 6, 20));
+        };
+        const bool hotA = (m_hover == Hit::EdgeA || m_drag == Drag::EdgeA);
+        const bool hotB = (m_hover == Hit::EdgeB || m_drag == Drag::EdgeB);
+        drawEdge(m_selStart, hotA);
+        drawEdge(m_selEnd, hotB);
+        // Labels
+        p.setPen(QColor(240, 220, 80));
+        p.drawText(QPointF(xFromPos(m_selStart) + 4, r.top() + 14), QStringLiteral("A"));
+        p.drawText(QPointF(xFromPos(m_selEnd) - 12, r.top() + 14), QStringLiteral("B"));
     }
-    path.closeSubpath();
 
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0, 160, 70, 120));
-    p.drawPath(path);
-    p.setPen(QPen(QColor(80, 230, 120), 1.2));
-    p.setBrush(Qt::NoBrush);
-    p.drawPath(path);
-
-    if (m_playbackPos >= 0.0 && m_playbackPos <= 1.0) {
-        const int cx = r.left() + static_cast<int>(m_playbackPos * r.width());
-        p.setPen(QPen(QColor(255, 200, 50), 2));
-        p.drawLine(cx, r.top() + 1, cx, r.bottom() - 1);
+    // Playhead
+    if (m_playbackPos >= 0.0) {
+        const qreal x = xFromPos(m_playbackPos);
+        p.setPen(QPen(QColor(230, 230, 230), 1.5));
+        p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
     }
 }

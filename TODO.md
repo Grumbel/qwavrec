@@ -201,11 +201,10 @@ document paths, history, normalize, and WAV peak extraction.
 
 ### Missing vs original product intent
 
-- [ ] Select and cut sections of the recording (user request) — see
-  **Tape-style insert / edit** below before implementing.
-- [ ] Append recordings until File→New (brainstorm; may reject) — related
-  to tape-style insert; current model is one take = one continuous
-  capture, previous takes stay in History.
+- [x] Select and cut sections of the recording — cut/copy/paste/delete/crop
+  with edit undo; A–B edge drag; Record Insert mode.
+- [x] Insert recording at playhead — Transport → Record Insert (checkable).
+  Splices capture into the current document; normal Record still makes a new take.
 - [ ] True in-RAM buffer without temp files (cache already helps)
 - [ ] Peak-hold / clip LED on meters
 - [ ] Drag-and-drop files onto the window
