@@ -8,15 +8,14 @@
 #include <QMediaDevices>
 #include <QMediaPlayer>
 #include <QAudioOutput>
-#include <QMediaCaptureSession>
-#include <QAudioInput>
-#include <QMediaRecorder>
 #include <QAudioSource>
 #include <QAudioBufferOutput>
-#include <QIODevice>
-#include <QTemporaryFile>
 #include <QAudioDecoder>
+#include <QIODevice>
 #include <QVector>
+#include <QElapsedTimer>
+
+#include "wavwriter.h"
 
 class QComboBox;
 class QLabel;
@@ -46,20 +45,20 @@ private slots:
     void onOpen();
     void onSave();
     void onSaveAs();
-    void onRecord();   // toggle
-    void onPlay();     // toggle
+    void onRecord();
+    void onPlay();
     void onAbout();
 
     void onPositionChanged(qint64 position);
     void onDurationChanged(qint64 duration);
     void onPlayerStateChanged(QMediaPlayer::PlaybackState state);
-    void onRecorderStateChanged(QMediaRecorder::RecorderState state);
     void onPlayerError(QMediaPlayer::Error error, const QString &errorString);
-    void onRecorderError(QMediaRecorder::Error error, const QString &errorString);
     void onSeek(int value);
 
     void onAudioSourceReadyRead();
     void onAudioBufferReceived(const QAudioBuffer &buffer);
+    void onDecoderBufferReady();
+    void onDecoderFinished();
 
 private:
     enum class AppState { Ready, Playing, Paused, Recording, Error };
@@ -73,8 +72,9 @@ private:
     void updateTimeLabel();
     void updateWindowTitle();
     QString formatTime(qint64 ms) const;
-    void startInputMonitoring();
-    void stopInputMonitoring();
+
+    void startAudioSource();
+    void stopAudioSource();
     qreal computeLevel(const QAudioBuffer &buffer) const;
 
     bool maybeSave();
@@ -84,10 +84,11 @@ private:
     bool hasDocument() const;
     void markModified();
     void loadWaveformFromDocument();
-    void onDecoderBufferReady();
-    void onDecoderFinished();
+    void stopDecoder();
 
-    // Actions
+    // Apply mic gain (0..2) to Int16 buffer in-place; returns peak 0..1
+    float processCaptureBuffer(QByteArray &data, const QAudioFormat &fmt);
+
     QAction *m_newAction = nullptr;
     QAction *m_openAction = nullptr;
     QAction *m_saveAction = nullptr;
@@ -97,7 +98,6 @@ private:
     QAction *m_playAction = nullptr;
     QAction *m_aboutAction = nullptr;
 
-    // UI
     QLabel *m_fileLabel = nullptr;
     QComboBox *m_inputCombo = nullptr;
     QComboBox *m_outputCombo = nullptr;
@@ -109,31 +109,29 @@ private:
     LevelMeter *m_outputMeter = nullptr;
     WaveformWidget *m_waveform = nullptr;
 
-    // Waveform decoding
-    QAudioDecoder *m_decoder = nullptr;
-    QVector<float> m_decodePeaks;
-    qint64 m_decodeSampleCount = 0;
-
-    // Media
     QMediaDevices m_devices;
     QMediaPlayer *m_player = nullptr;
     QAudioOutput *m_audioOutput = nullptr;
     QAudioBufferOutput *m_bufferOutput = nullptr;
-    QMediaCaptureSession *m_captureSession = nullptr;
-    QAudioInput *m_audioInput = nullptr;
-    QMediaRecorder *m_recorder = nullptr;
+
     QAudioSource *m_audioSource = nullptr;
     QIODevice *m_audioSourceDevice = nullptr;
+    WavWriter m_wavWriter;
+    qreal m_micGain = 1.0; // 0..2
 
-    // Document
-    QString m_savedPath;          // empty = never saved / Untitled
-    QString m_tempPath;           // current recording lives here until Save
+    QAudioDecoder *m_decoder = nullptr;
+    QVector<float> m_decodePeaks;
+    QVector<float> m_liveRecordPeaks; // built while recording
+
+    QString m_savedPath;
+    QString m_tempPath;
     bool m_isTemporary = true;
     bool m_modified = false;
 
     AppState m_state = AppState::Ready;
     qint64 m_duration = 0;
     bool m_seeking = false;
+    QElapsedTimer m_recordTimer;
 };
 
 #endif

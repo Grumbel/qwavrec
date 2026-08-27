@@ -20,6 +20,8 @@ qt_add_executable(qwavrec
     src/levelmeter.h
     src/waveformwidget.cpp
     src/waveformwidget.h
+    src/wavwriter.cpp
+    src/wavwriter.h
 )
 
 target_link_libraries(qwavrec PRIVATE
