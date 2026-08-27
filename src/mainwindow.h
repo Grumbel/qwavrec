@@ -93,6 +93,7 @@ private:
     void updateTimeLabel();
     void updateWindowTitle();
     void updateMicGainLabel();
+    void updatePlaybackVolumeLabel();
     QString formatTime(qint64 ms) const;
     QIcon themeIcon(const QString &name, QStyle::StandardPixmap fallback) const;
 
@@ -154,6 +155,7 @@ private:
     MarkedSlider *m_inputVolumeSlider = nullptr;
     QLabel *m_micGainLabel = nullptr;
     QSlider *m_outputVolumeSlider = nullptr;
+    QLabel *m_playbackVolumeLabel = nullptr;
     QSlider *m_seekSlider = nullptr;
     QLabel *m_timeLabel = nullptr;
     LevelMeter *m_inputMeter = nullptr;

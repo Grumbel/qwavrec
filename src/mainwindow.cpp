@@ -391,8 +391,13 @@ void MainWindow::createCentralWidget()
     m_outputVolumeSlider = new QSlider(Qt::Horizontal);
     m_outputVolumeSlider->setRange(0, 100);
     m_outputVolumeSlider->setToolTip(tr("Playback volume"));
+    m_playbackVolumeLabel = new QLabel(tr("80%"));
+    m_playbackVolumeLabel->setMinimumWidth(48);
+    auto *outRow = new QHBoxLayout;
+    outRow->addWidget(m_outputVolumeSlider, 1);
+    outRow->addWidget(m_playbackVolumeLabel);
     volForm->addRow(tr("Mic gain"), micRow);
-    volForm->addRow(tr("Playback volume"), m_outputVolumeSlider);
+    volForm->addRow(tr("Playback volume"), outRow);
     mainLayout->addLayout(volForm);
 
     auto *meterForm = new QFormLayout;
@@ -1503,8 +1508,16 @@ void MainWindow::onInputVolumeChanged(int value)
 void MainWindow::onOutputVolumeChanged(int value)
 {
     m_player->setVolume(value / 100.0);
+    updatePlaybackVolumeLabel();
     if (!m_restoringSettings)
         saveSettings();
+}
+
+void MainWindow::updatePlaybackVolumeLabel()
+{
+    if (!m_playbackVolumeLabel || !m_outputVolumeSlider)
+        return;
+    m_playbackVolumeLabel->setText(tr("%1%").arg(m_outputVolumeSlider->value()));
 }
 
 void MainWindow::updateMicGainLabel()
