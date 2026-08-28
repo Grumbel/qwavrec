@@ -24,6 +24,7 @@ class QComboBox;
 class QLabel;
 class QSlider;
 class QAction;
+class QActionGroup;
 class LevelMeter;
 class WaveformWidget;
 class MarkedSlider;
@@ -66,7 +67,7 @@ private slots:
     void onInsertRecordToggled(bool on);
     void onLoopToggled(bool on);
     void onAutoScaleWaveformToggled(bool on);
-    void onSpectrogramToggled(bool on);
+    void onViewModeTriggered(QAction *action);
     void onAbout();
     void onUndo();
     void onRedo();
@@ -149,7 +150,9 @@ private:
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
     QAction *m_autoScaleAction = nullptr;
+    QAction *m_waveformViewAction = nullptr;
     QAction *m_spectrogramAction = nullptr;
+    QActionGroup *m_viewModeGroup = nullptr;
     QAction *m_historyAction = nullptr;
     QAction *m_cutAction = nullptr;
     QAction *m_copyAction = nullptr;

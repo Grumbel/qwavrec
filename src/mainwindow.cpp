@@ -24,6 +24,7 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
+#include <QActionGroup>
 #include <QToolButton>
 #include <QStatusBar>
 #include <QDockWidget>
@@ -335,11 +336,60 @@ void MainWindow::createActions()
     m_autoScaleAction->setCheckable(true);
     connect(m_autoScaleAction, &QAction::toggled, this, &MainWindow::onAutoScaleWaveformToggled);
 
-    m_spectrogramAction = new QAction(tr("S&pectrogram"), this);
+    // Exclusive view modes (toolbar + View menu). Qt has no QRadioButton on
+    // toolbars; the proper pattern is checkable QActions in a QActionGroup.
+    auto makeViewIcon = [](bool spectrogram) {
+        QPixmap pix(24, 24);
+        pix.fill(Qt::transparent);
+        QPainter p(&pix);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        if (spectrogram) {
+            // Stacked heat bands (spectrogram)
+            const QColor cols[] = {
+                QColor(30, 40, 90), QColor(20, 120, 160),
+                QColor(40, 180, 90), QColor(220, 200, 50), QColor(230, 80, 40)
+            };
+            for (int row = 0; row < 5; ++row) {
+                p.setBrush(cols[row]);
+                p.setPen(Qt::NoPen);
+                for (int col = 0; col < 6; ++col) {
+                    const int h = 2 + ((row + col) % 3);
+                    p.drawRect(3 + col * 3, 20 - row * 3 - h, 2, h);
+                }
+            }
+        } else {
+            // Green amplitude outline (waveform)
+            p.setPen(QPen(QColor(40, 180, 90), 1.8));
+            p.setBrush(Qt::NoBrush);
+            QPainterPath path;
+            path.moveTo(2, 12);
+            path.cubicTo(6, 4, 8, 20, 12, 12);
+            path.cubicTo(16, 4, 18, 20, 22, 12);
+            p.drawPath(path);
+            p.setPen(QPen(QColor(40, 180, 90, 80), 1));
+            p.drawLine(2, 12, 22, 12);
+        }
+        return QIcon(pix);
+    };
+
+    m_viewModeGroup = new QActionGroup(this);
+    m_viewModeGroup->setExclusive(true);
+
+    m_waveformViewAction = new QAction(makeViewIcon(false), tr("&Waveform"), this);
+    m_waveformViewAction->setStatusTip(tr("Show amplitude waveform"));
+    m_waveformViewAction->setCheckable(true);
+    m_waveformViewAction->setChecked(true);
+    m_waveformViewAction->setToolTip(tr("Waveform"));
+    m_viewModeGroup->addAction(m_waveformViewAction);
+
+    m_spectrogramAction = new QAction(makeViewIcon(true), tr("S&pectrogram"), this);
     m_spectrogramAction->setStatusTip(tr("Show a frequency spectrogram instead of the amplitude waveform"));
     m_spectrogramAction->setCheckable(true);
     m_spectrogramAction->setShortcut(QKeySequence(tr("Ctrl+Shift+S")));
-    connect(m_spectrogramAction, &QAction::toggled, this, &MainWindow::onSpectrogramToggled);
+    m_spectrogramAction->setToolTip(tr("Spectrogram"));
+    m_viewModeGroup->addAction(m_spectrogramAction);
+
+    connect(m_viewModeGroup, &QActionGroup::triggered, this, &MainWindow::onViewModeTriggered);
 
     m_aboutAction = new QAction(windowIcon(), tr("&About QWavRec"), this);
     m_aboutAction->setStatusTip(tr("About QWavRec"));
@@ -382,7 +432,9 @@ void MainWindow::createMenus()
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(m_historyAction);
     viewMenu->addSeparator();
+    viewMenu->addAction(m_waveformViewAction);
     viewMenu->addAction(m_spectrogramAction);
+    viewMenu->addSeparator();
     viewMenu->addAction(m_autoScaleAction);
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
@@ -407,6 +459,10 @@ void MainWindow::createToolBar()
     // Document edit history
     tb->addAction(m_editUndoAction);
     tb->addAction(m_editRedoAction);
+    tb->addSeparator();
+    // Display mode (exclusive checkable actions ≈ radio buttons)
+    tb->addAction(m_waveformViewAction);
+    tb->addAction(m_spectrogramAction);
 
     // Push take navigation to the right edge (above the Takes dock)
     auto *spacer = new QWidget;
@@ -553,7 +609,10 @@ void MainWindow::loadSettings()
     m_autoScaleWaveform = autoScale;
     m_autoScaleAction->setChecked(autoScale);
     m_spectrogramMode = spectrogram;
-    m_spectrogramAction->setChecked(spectrogram);
+    if (m_waveformViewAction && m_spectrogramAction) {
+        m_waveformViewAction->setChecked(!spectrogram);
+        m_spectrogramAction->setChecked(spectrogram);
+    }
     if (m_waveform)
         m_waveform->setDisplayMode(m_spectrogramMode
             ? WaveformWidget::DisplayMode::Spectrogram
@@ -1468,8 +1527,13 @@ void MainWindow::onAutoScaleWaveformToggled(bool on)
         saveSettings();
 }
 
-void MainWindow::onSpectrogramToggled(bool on)
+void MainWindow::onViewModeTriggered(QAction *action)
 {
+    if (!action)
+        return;
+    const bool on = (action == m_spectrogramAction);
+    if (m_spectrogramMode == on)
+        return;
     m_spectrogramMode = on;
     applyDisplayMode();
     if (!m_restoringSettings)
