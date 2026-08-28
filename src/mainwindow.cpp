@@ -35,6 +35,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QAudioFormat>
+#include <QImage>
 #include <QStyle>
 #include <QIcon>
 #include <QApplication>
@@ -326,6 +327,12 @@ void MainWindow::createActions()
     m_autoScaleAction->setCheckable(true);
     connect(m_autoScaleAction, &QAction::toggled, this, &MainWindow::onAutoScaleWaveformToggled);
 
+    m_spectrogramAction = new QAction(tr("S&pectrogram"), this);
+    m_spectrogramAction->setStatusTip(tr("Show a frequency spectrogram instead of the amplitude waveform"));
+    m_spectrogramAction->setCheckable(true);
+    m_spectrogramAction->setShortcut(QKeySequence(tr("Ctrl+Shift+S")));
+    connect(m_spectrogramAction, &QAction::toggled, this, &MainWindow::onSpectrogramToggled);
+
     m_aboutAction = new QAction(tr("&About QWavRec"), this);
     connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAbout);
 }
@@ -366,6 +373,8 @@ void MainWindow::createMenus()
 
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(m_historyAction);
+    viewMenu->addSeparator();
+    viewMenu->addAction(m_spectrogramAction);
     viewMenu->addAction(m_autoScaleAction);
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
@@ -522,6 +531,7 @@ void MainWindow::loadSettings()
     const bool loop = s.value(QStringLiteral("playback/loop"), false).toBool();
     const bool insertRec = s.value(QStringLiteral("playback/insertRecord"), false).toBool();
     const bool autoScale = s.value(QStringLiteral("view/autoScaleWaveform"), false).toBool();
+    const bool spectrogram = s.value(QStringLiteral("view/spectrogram"), false).toBool();
 
     m_restoringSettings = true;
     m_inputVolumeSlider->setValue(qBound(0, mic, 300));
@@ -534,6 +544,12 @@ void MainWindow::loadSettings()
     }
     m_autoScaleWaveform = autoScale;
     m_autoScaleAction->setChecked(autoScale);
+    m_spectrogramMode = spectrogram;
+    m_spectrogramAction->setChecked(spectrogram);
+    if (m_waveform)
+        m_waveform->setDisplayMode(m_spectrogramMode
+            ? WaveformWidget::DisplayMode::Spectrogram
+            : WaveformWidget::DisplayMode::Waveform);
     const bool showTakes = s.value(QStringLiteral("view/takesPanel"), false).toBool();
     if (m_takesDock) {
         m_takesDock->setVisible(showTakes);
@@ -558,6 +574,7 @@ void MainWindow::saveSettings()
     s.setValue(QStringLiteral("playback/insertRecord"),
                m_insertRecordAction && m_insertRecordAction->isChecked());
     s.setValue(QStringLiteral("view/autoScaleWaveform"), m_autoScaleWaveform);
+    s.setValue(QStringLiteral("view/spectrogram"), m_spectrogramMode);
     s.setValue(QStringLiteral("view/takesPanel"), m_takesDock && m_takesDock->isVisible());
 }
 
@@ -643,6 +660,13 @@ void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &f
         return;
     }
     m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+    if (m_spectrogramMode && !pcm.isEmpty())
+        m_waveform->setSpectrogram(WavFile::spectrogram(pcm, fmt));
+    else
+        m_waveform->setSpectrogram(QImage());
+    m_waveform->setDisplayMode(m_spectrogramMode
+        ? WaveformWidget::DisplayMode::Spectrogram
+        : WaveformWidget::DisplayMode::Waveform);
 }
 
 void MainWindow::loadDocumentForPlayback(const QString &path)
@@ -848,8 +872,12 @@ void MainWindow::onRecord()
 
     m_liveRecordPeaks.clear();
     m_recordPcm.clear();
-    if (!m_insertRecord)
+    if (!m_insertRecord) {
         m_waveform->clear();
+    } else {
+        // Keep peaks for insert preview; drop stale spectrogram so live falls back to waveform paint.
+        m_waveform->setSpectrogram(QImage());
+    }
     m_recordTimer.restart();
     markModified();
     setAppState(AppState::Recording);
@@ -1393,6 +1421,38 @@ void MainWindow::onAutoScaleWaveformToggled(bool on)
     if (!m_restoringSettings)
         saveSettings();
 }
+
+void MainWindow::onSpectrogramToggled(bool on)
+{
+    m_spectrogramMode = on;
+    applyDisplayMode();
+    if (!m_restoringSettings)
+        saveSettings();
+}
+
+void MainWindow::applyDisplayMode()
+{
+    if (!m_waveform)
+        return;
+    m_waveform->setDisplayMode(m_spectrogramMode
+        ? WaveformWidget::DisplayMode::Spectrogram
+        : WaveformWidget::DisplayMode::Waveform);
+    if (!m_spectrogramMode)
+        return;
+    // Build spectrogram from the current document PCM when available.
+    if (m_player && !m_player->pcm().isEmpty()) {
+        m_waveform->setSpectrogram(WavFile::spectrogram(m_player->pcm(), m_player->format()));
+        return;
+    }
+    if (!m_recordPcm.isEmpty() && m_state == AppState::Recording) {
+        QAudioFormat liveFmt;
+        liveFmt.setSampleFormat(QAudioFormat::Int16);
+        liveFmt.setSampleRate(48000);
+        liveFmt.setChannelCount(1);
+        m_waveform->setSpectrogram(WavFile::spectrogram(m_recordPcm, liveFmt));
+    }
+}
+
 
 void MainWindow::onUndo()
 {

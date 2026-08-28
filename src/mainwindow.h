@@ -64,6 +64,7 @@ private slots:
     void onInsertRecordToggled(bool on);
     void onLoopToggled(bool on);
     void onAutoScaleWaveformToggled(bool on);
+    void onSpectrogramToggled(bool on);
     void onAbout();
     void onUndo();
     void onRedo();
@@ -113,6 +114,7 @@ private:
     void markModified();
     void loadDocumentForPlayback(const QString &path);
     void setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt);
+    void applyDisplayMode();
     QVector<float> normalizedPeaks(const QVector<float> &raw) const;
 
     void loadSettings();
@@ -142,6 +144,7 @@ private:
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
     QAction *m_autoScaleAction = nullptr;
+    QAction *m_spectrogramAction = nullptr;
     QAction *m_historyAction = nullptr;
     QAction *m_cutAction = nullptr;
     QAction *m_copyAction = nullptr;
@@ -204,6 +207,7 @@ private:
     QString m_pendingOutputName;
     bool m_restoringSettings = false;
     bool m_autoScaleWaveform = false;
+    bool m_spectrogramMode = false;
     bool m_monitoring = false;
     /** Source name currently opened for the input meter (empty = server default). */
     QString m_monitorSourceName;
