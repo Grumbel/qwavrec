@@ -134,16 +134,18 @@ Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
   Float/other formats fail silently-ish (`return false`). Should
   message the user.
 
-- [ ] **Capture format lock**  
-  We prefer 48 kHz mono Int16; if the device cannot do that, preferred
-  format may be stereo/float and WAV headers follow that — OK, but
-  channel count >1 is not reflected in the UI.
+- [ ] **Capture format lock / stereo**  
+  Today the record path hard-codes 48 kHz **mono** Int16 in several
+  places (`MainWindow` liveFmt / WavWriter open, `PulseCapture::start`
+  default `channels = 1`). Playback already follows the file’s channel
+  count. See **Stereo capture** below for the intended minimal plan.
 
-- [x] **Input monitor vs exclusive device** (capture released while playing; restarted when idle)  
-  Capture stream stays open for metering while idle. Some devices /
-  Bluetooth profiles dislike always-on capture; may block other apps
-  or fail to start record. Consider starting the source only when
-  needed (record or explicit “monitor” mode).
+- [x] **Input meter dies while playing** (fixed: keep monitoring during playback)  
+  `onPlay` used to call `stopMonitoring()`, so the input level bar
+  froze until play stopped and `onPlayerStateChanged(Stopped)`
+  restarted capture. Pulse can run capture + playback concurrently;
+  monitoring is left up during play/pause. Bluetooth exclusive-device
+  quirks remain a residual risk (see non-goals / known limits).
 
 - [x] **Output meter is peak-from-file, not post-volume** (scaled by playback volume)  
   Level is independent of the playback volume slider (pre-fader).
@@ -268,6 +270,82 @@ surgery. If product pressure returns, implement only the splice→new-take
 path above; treat full edit as a **non-goal**.
 
 ---
+
+---
+
+### Stereo capture (design note — keep it small)
+
+**Goal:** record **stereo** WAV, especially from **sink monitor** sources
+(system audio). Mic stereo is nice-to-have; not the driver.
+
+**How channels work on Linux (Pulse / PipeWire)**
+
+| Layout | Channels | Typical use |
+|--------|----------|-------------|
+| Mono | 1 | Mic, simple voice |
+| Stereo | 2 | Default desktop sink / monitor |
+| 2.1 / 5.0 / 5.1 / 7.1 | 3–8 | Home theatre sinks |
+
+Pulse and PipeWire expose a source’s channel count (and `pa_channel_map`)
+on `pa_source_info`. A **monitor** of a stereo sink is almost always
+stereo; a monitor of a 7.1 sink can be **8 channels**. `pa_simple` will
+record whatever `ss.channels` you request; if you open mono on a stereo
+source, the server mixes/downmixes according to its rules (often not what
+you want for “capture the desktop”). WAV stores interleaved frames with
+no special surround metadata beyond channel count (channel order is
+convention / WAVEFORMATEXTENSIBLE).
+
+**We do not need a surround mixer.** Recording 7.1 as an 8-channel WAV is
+possible in the backend, but the UI cost is high and out of scope for a
+“boring recorder”. Treat **>2 channels** as: either refuse with a clear
+message, or record as-is and show a single combined peak meter / waveform
+(max across channels) with a status note — no 8-bar mixer.
+
+**Minimal UI (recommended)**
+
+1. **One global mode:** Mono | Stereo (toolbar or Input panel toggle).
+   Default **Stereo** when the selected source reports ≥2 channels, else
+   Mono. User can force Mono to downmix (explicit).
+2. **Input meter:** in Stereo, split the existing bar into **L | R**
+   (two narrow LevelMeters or one dual-channel paint). Same green/yellow/red
+   thresholds. No per-channel peak-hold chrome beyond what we already have.
+3. **Gain:** keep a **single** mic-boost slider for both channels. No lock
+   icon, no L/R independent gain in v1 — that is mixer territory
+   (`pavucontrol`).
+4. **Waveform:** keep **one** view. Density/peaks = max abs across channels
+   per time bin (or mid+side later — not needed now). Do not stack L/R
+   waveforms unless users demand it after stereo ships.
+5. **Playback:** already format-driven; no change except ensuring stereo
+   files play to a stereo sink without silent downmix surprises (Pulse
+   remaps if sink is mono).
+
+**Backend checklist (when implementing)**
+
+- [ ] Plumb `channels` from UI mode into `PulseCapture::start`, WavWriter,
+      liveFmt, insert-format match, peak/density helpers (use `bytesPerFrame`
+      / interleaved walk — already partly generic).
+- [ ] Enumerate source channel count (extend `PulseDevice` with
+      `channelCount` from `pa_source_info`) so the default mode is honest.
+- [ ] Peak meter: `currentPeak()` → L/R peaks (or max + optional split).
+- [ ] `WavFile::peaks` / `waveformDensity`: walk all channels in a frame
+      (today only the first sample of each frame is used).
+- [ ] Settings key for preferred mode (`capture/channels` = 1|2).
+- [ ] Status tip when forcing mono on a stereo monitor: “Downmixing to mono”.
+
+**Explicitly out of scope for stereo v1**
+
+- Per-channel gain / balance / lock
+- Mid-side encoding, width, or “stereo enhance”
+- 5.1 / 7.1 metering, channel routing, or remap UI
+- Opening a second capture stream
+
+**Recommendation**
+
+Ship stereo as **mode toggle + dual input meter + correct interleaved
+PCM**. That covers “record desktop monitor in stereo” without turning
+QWavRec into a channel strip. Surround stays a non-goal unless someone
+only needs opaque multi-channel files with combined metering.
+
 
 ### Non-goals (unchanged)
 
