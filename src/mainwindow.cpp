@@ -1210,7 +1210,9 @@ void MainWindow::onPlay()
         m_player->clearPlayRange();
         applySelectionToPlayer();
     }
-    stopMonitoring();
+    // Keep capture running so the input meter stays live during playback.
+    // Pulse handles concurrent record+playback streams; stopping here only
+    // blanked the meter until play ended (see onPlayerStateChanged → startMonitoring).
     m_player->setSinkName(currentSinkName());
     m_player->play();
 }
@@ -1635,8 +1637,7 @@ void MainWindow::activateHistoryTake(const QString &path)
 
     if (resumePlay && m_player && m_player->duration() > 0) {
         m_resumePlayAfterTakeLoad = false;
-        // Same path as onPlay: playback holds the sink; meter restarts when play ends.
-        stopMonitoring();
+        // Same path as onPlay: leave capture up so the input meter keeps moving.
         m_player->setSinkName(currentSinkName());
         m_player->setPosition(0);
         m_player->play();
