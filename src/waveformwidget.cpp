@@ -28,9 +28,24 @@ void WaveformWidget::setPeaks(const QVector<float> &peaks)
     update();
 }
 
+void WaveformWidget::setSpectrogram(const QImage &image)
+{
+    m_spectrogram = image;
+    update();
+}
+
+void WaveformWidget::setDisplayMode(DisplayMode mode)
+{
+    if (m_mode == mode)
+        return;
+    m_mode = mode;
+    update();
+}
+
 void WaveformWidget::clear()
 {
     m_peaks.clear();
+    m_spectrogram = QImage();
     m_playbackPos = 0.0;
     clearSelection();
     update();
@@ -110,7 +125,7 @@ void WaveformWidget::setHover(Hit h)
 
 void WaveformWidget::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && !m_peaks.isEmpty()) {
+    if (event->button() == Qt::LeftButton && (!m_peaks.isEmpty() || !m_spectrogram.isNull())) {
         const qreal x = event->position().x();
         const qreal p = posFromX(x);
         const Hit hit = hitTest(x);
@@ -138,7 +153,7 @@ void WaveformWidget::mouseMoveEvent(QMouseEvent *event)
     const qreal p = posFromX(x);
 
     if (m_drag == Drag::None) {
-        if (!m_peaks.isEmpty())
+        if (!m_peaks.isEmpty() || !m_spectrogram.isNull())
             setHover(hitTest(x));
         QWidget::mouseMoveEvent(event);
         return;
@@ -220,25 +235,27 @@ void WaveformWidget::paintEvent(QPaintEvent *)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
     const QRect r = rect().adjusted(1, 1, -1, -1);
-    p.fillRect(rect(), QColor(20, 24, 20));
-    p.setPen(QColor(40, 50, 40));
-    p.drawRect(r);
 
-    if (m_peaks.isEmpty()) {
-        p.setPen(QColor(120, 140, 120));
-        p.drawText(r, Qt::AlignCenter, tr("No waveform"));
-        return;
+    p.fillRect(rect(), QColor(18, 22, 28));
+    p.setPen(QColor(40, 48, 58));
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
+
+    const bool useSpec = (m_mode == DisplayMode::Spectrogram && !m_spectrogram.isNull());
+    if (useSpec) {
+        paintSpectrogram(p, r);
+    } else if (!m_peaks.isEmpty()) {
+        paintWaveform(p, r);
+    } else {
+        p.setPen(QColor(90, 100, 110));
+        p.drawText(r, Qt::AlignCenter,
+                   m_mode == DisplayMode::Spectrogram ? tr("No spectrogram") : tr("No waveform"));
     }
 
-    // Selection fill
-    if (hasSelection()) {
-        const int x0 = int(xFromPos(m_selStart));
-        const int x1 = int(xFromPos(m_selEnd));
-        p.fillRect(QRect(x0, r.top(), qMax(1, x1 - x0), r.height()),
-                    QColor(180, 160, 40, 70));
-    }
+    paintOverlay(p, r);
+}
 
-    // Closed path: top outline left→right, bottom outline right→left, then fill
+void WaveformWidget::paintWaveform(QPainter &p, const QRect &r)
+{
     const int n = m_peaks.size();
     const qreal mid = r.center().y();
     const qreal amp = r.height() / 2.0 - 3.0;
@@ -264,17 +281,30 @@ void WaveformWidget::paintEvent(QPaintEvent *)
     p.setBrush(Qt::NoBrush);
     p.drawPath(path);
 
-    // Center line under the wave
     p.setPen(QPen(QColor(20, 50, 30), 1, Qt::DotLine));
     p.drawLine(r.left(), int(mid), r.right(), int(mid));
+}
 
-    // Selection edges (highlight hovered / active)
+void WaveformWidget::paintSpectrogram(QPainter &p, const QRect &r)
+{
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    p.drawImage(r, m_spectrogram);
+}
+
+void WaveformWidget::paintOverlay(QPainter &p, const QRect &r)
+{
+    if (hasSelection()) {
+        const int x0 = int(xFromPos(m_selStart));
+        const int x1 = int(xFromPos(m_selEnd));
+        p.fillRect(QRect(x0, r.top(), qMax(1, x1 - x0), r.height()),
+                    QColor(180, 160, 40, 70));
+    }
+
     if (hasSelection()) {
         auto drawEdge = [&](qreal pos, bool hot) {
             const qreal x = xFromPos(pos);
             p.setPen(QPen(hot ? QColor(255, 220, 60) : QColor(220, 200, 50), hot ? 3.0 : 2.0));
             p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
-            // Small grip ticks
             p.setBrush(hot ? QColor(255, 220, 60) : QColor(220, 200, 50));
             p.setPen(Qt::NoPen);
             const qreal gy = r.center().y();
@@ -284,13 +314,11 @@ void WaveformWidget::paintEvent(QPaintEvent *)
         const bool hotB = (m_hover == Hit::EdgeB || m_drag == Drag::EdgeB);
         drawEdge(m_selStart, hotA);
         drawEdge(m_selEnd, hotB);
-        // Labels
         p.setPen(QColor(240, 220, 80));
         p.drawText(QPointF(xFromPos(m_selStart) + 4, r.top() + 14), QStringLiteral("A"));
         p.drawText(QPointF(xFromPos(m_selEnd) - 12, r.top() + 14), QStringLiteral("B"));
     }
 
-    // Playhead
     if (m_playbackPos >= 0.0) {
         const qreal x = xFromPos(m_playbackPos);
         p.setPen(QPen(QColor(230, 230, 230), 1.5));

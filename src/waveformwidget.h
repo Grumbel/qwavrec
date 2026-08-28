@@ -6,14 +6,21 @@
 
 #include <QWidget>
 #include <QVector>
+#include <QImage>
 
 class WaveformWidget : public QWidget
 {
     Q_OBJECT
 public:
+    enum class DisplayMode { Waveform, Spectrogram };
+
     explicit WaveformWidget(QWidget *parent = nullptr);
 
     void setPeaks(const QVector<float> &peaks);
+    /** Offline spectrogram image (time →, frequency ↑). Empty clears spectrogram. */
+    void setSpectrogram(const QImage &image);
+    void setDisplayMode(DisplayMode mode);
+    DisplayMode displayMode() const { return m_mode; }
     void clear();
     void setPlaybackPosition(qreal pos); // 0..1
 
@@ -48,10 +55,15 @@ private:
     qreal xFromPos(qreal pos) const;
     Hit hitTest(qreal x) const;
     void setHover(Hit h);
+    void paintWaveform(QPainter &p, const QRect &r);
+    void paintSpectrogram(QPainter &p, const QRect &r);
+    void paintOverlay(QPainter &p, const QRect &r);
     /** Edge grab distance in widget pixels. */
     static constexpr qreal kEdgePx = 8.0;
 
+    DisplayMode m_mode = DisplayMode::Waveform;
     QVector<float> m_peaks;
+    QImage m_spectrogram;
     qreal m_playbackPos = 0.0;
     qreal m_selStart = 0.0;
     qreal m_selEnd = 0.0;
