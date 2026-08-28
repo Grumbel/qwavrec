@@ -42,6 +42,7 @@
 #include <QIcon>
 #include <QApplication>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QKeySequence>
 #include <QCloseEvent>
@@ -338,51 +339,80 @@ void MainWindow::createActions()
 
     // Exclusive view modes (toolbar + View menu). Qt has no QRadioButton on
     // toolbars; the proper pattern is checkable QActions in a QActionGroup.
-    auto makeViewIcon = [](bool spectrogram) {
+    // Prefer freedesktop/theme icons when the icon theme provides them; otherwise
+    // paint a small fallback (always visible regardless of theme).
+    auto themeOrFallback = [](const QStringList &names, const QIcon &fallback) {
+        for (const QString &name : names) {
+            const QIcon icon = QIcon::fromTheme(name);
+            if (!icon.isNull())
+                return icon;
+        }
+        return fallback;
+    };
+    auto paintWaveformIcon = []() {
         QPixmap pix(24, 24);
         pix.fill(Qt::transparent);
         QPainter p(&pix);
         p.setRenderHint(QPainter::Antialiasing, true);
-        if (spectrogram) {
-            // Stacked heat bands (spectrogram)
-            const QColor cols[] = {
-                QColor(30, 40, 90), QColor(20, 120, 160),
-                QColor(40, 180, 90), QColor(220, 200, 50), QColor(230, 80, 40)
-            };
-            for (int row = 0; row < 5; ++row) {
-                p.setBrush(cols[row]);
-                p.setPen(Qt::NoPen);
-                for (int col = 0; col < 6; ++col) {
-                    const int h = 2 + ((row + col) % 3);
-                    p.drawRect(3 + col * 3, 20 - row * 3 - h, 2, h);
-                }
+        p.setPen(QPen(QColor(40, 180, 90), 2.0));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath path;
+        path.moveTo(2, 12);
+        path.cubicTo(6, 4, 8, 20, 12, 12);
+        path.cubicTo(16, 4, 18, 20, 22, 12);
+        p.drawPath(path);
+        p.setPen(QPen(QColor(40, 180, 90, 90), 1));
+        p.drawLine(2, 12, 22, 12);
+        return QIcon(pix);
+    };
+    auto paintSpectrogramIcon = []() {
+        QPixmap pix(24, 24);
+        pix.fill(Qt::transparent);
+        QPainter p(&pix);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        const QColor cols[] = {
+            QColor(30, 40, 90), QColor(20, 120, 160),
+            QColor(40, 180, 90), QColor(220, 200, 50), QColor(230, 80, 40)
+        };
+        for (int row = 0; row < 5; ++row) {
+            p.setBrush(cols[row]);
+            p.setPen(Qt::NoPen);
+            for (int col = 0; col < 6; ++col) {
+                const int h = 2 + ((row + col) % 3);
+                p.drawRect(3 + col * 3, 20 - row * 3 - h, 2, h);
             }
-        } else {
-            // Green amplitude outline (waveform)
-            p.setPen(QPen(QColor(40, 180, 90), 1.8));
-            p.setBrush(Qt::NoBrush);
-            QPainterPath path;
-            path.moveTo(2, 12);
-            path.cubicTo(6, 4, 8, 20, 12, 12);
-            path.cubicTo(16, 4, 18, 20, 22, 12);
-            p.drawPath(path);
-            p.setPen(QPen(QColor(40, 180, 90, 80), 1));
-            p.drawLine(2, 12, 22, 12);
         }
         return QIcon(pix);
     };
 
+    // Waveform: line chart / XY curve (common in Breeze, Adwaita, etc.)
+    const QIcon waveIcon = themeOrFallback(
+        {QStringLiteral("office-chart-line"),
+         QStringLiteral("office-chart-line-stacked"),
+         QStringLiteral("labplot-xy-curve"),
+         QStringLiteral("draw-bezier-curves"),
+         QStringLiteral("audio-x-generic")},
+        paintWaveformIcon());
+    // Spectrogram: no universal name; histogram/area charts are the closest.
+    const QIcon specIcon = themeOrFallback(
+        {QStringLiteral("view-object-histogram-linear"),
+         QStringLiteral("office-chart-area"),
+         QStringLiteral("office-chart-area-stacked"),
+         QStringLiteral("labplot-xy-curve-smooth"),
+         QStringLiteral("sensors")},
+        paintSpectrogramIcon());
+
     m_viewModeGroup = new QActionGroup(this);
     m_viewModeGroup->setExclusive(true);
 
-    m_waveformViewAction = new QAction(makeViewIcon(false), tr("&Waveform"), this);
+    m_waveformViewAction = new QAction(waveIcon, tr("&Waveform"), this);
     m_waveformViewAction->setStatusTip(tr("Show amplitude waveform"));
     m_waveformViewAction->setCheckable(true);
     m_waveformViewAction->setChecked(true);
     m_waveformViewAction->setToolTip(tr("Waveform"));
     m_viewModeGroup->addAction(m_waveformViewAction);
 
-    m_spectrogramAction = new QAction(makeViewIcon(true), tr("S&pectrogram"), this);
+    m_spectrogramAction = new QAction(specIcon, tr("S&pectrogram"), this);
     m_spectrogramAction->setStatusTip(tr("Show a frequency spectrogram instead of the amplitude waveform"));
     m_spectrogramAction->setCheckable(true);
     m_spectrogramAction->setShortcut(QKeySequence(tr("Ctrl+Shift+S")));
