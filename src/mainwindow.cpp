@@ -16,6 +16,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QSizePolicy>
 #include <QComboBox>
 #include <QAbstractItemView>
@@ -559,7 +560,7 @@ void MainWindow::createCentralWidget()
     m_micGainLabel = new QLabel(tr("100%"));
     m_micGainLabel->setMinimumWidth(48);
     m_inputMeter = new LevelMeter;
-    m_inputMeter->setMinimumWidth(140);
+    m_inputMeter->setMinimumWidth(160);
     m_inputMeter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     m_outputVolumeSlider = new QSlider(Qt::Horizontal);
@@ -568,39 +569,50 @@ void MainWindow::createCentralWidget()
     m_playbackVolumeLabel = new QLabel(tr("80%"));
     m_playbackVolumeLabel->setMinimumWidth(48);
     m_outputMeter = new LevelMeter;
-    m_outputMeter->setMinimumWidth(140);
+    m_outputMeter->setMinimumWidth(160);
     m_outputMeter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // Each meter sits beside device + gain/volume so it spans both rows
-    // (and grows with the panel when the window is resized).
-    auto *ioColumn = new QVBoxLayout;
-    ioColumn->setSpacing(8);
+    // Single grid: meters share column 2 so they always match in width
+    // regardless of Input/Output combo text length. Each meter rowspan=2
+    // covers device + gain/volume.
+    auto *ioGrid = new QGridLayout;
+    ioGrid->setHorizontalSpacing(8);
+    ioGrid->setVerticalSpacing(6);
 
-    auto *inputBlock = new QHBoxLayout;
-    auto *inputForm = new QFormLayout;
-    inputForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-    inputForm->addRow(tr("Input"), m_inputCombo);
+    auto *inputLabel = new QLabel(tr("Input"));
+    inputLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    ioGrid->addWidget(inputLabel, 0, 0);
+    ioGrid->addWidget(m_inputCombo, 0, 1);
+    ioGrid->addWidget(m_inputMeter, 0, 2, 2, 1);
+
+    auto *micLabel = new QLabel(tr("Mic gain"));
+    micLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    ioGrid->addWidget(micLabel, 1, 0);
     auto *inGainRow = new QHBoxLayout;
+    inGainRow->setContentsMargins(0, 0, 0, 0);
     inGainRow->addWidget(m_inputVolumeSlider, 1);
     inGainRow->addWidget(m_micGainLabel);
-    inputForm->addRow(tr("Mic gain"), inGainRow);
-    inputBlock->addLayout(inputForm, 1);
-    inputBlock->addWidget(m_inputMeter, 1);
-    ioColumn->addLayout(inputBlock);
+    ioGrid->addLayout(inGainRow, 1, 1);
 
-    auto *outputBlock = new QHBoxLayout;
-    auto *outputForm = new QFormLayout;
-    outputForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-    outputForm->addRow(tr("Output"), m_outputCombo);
+    auto *outputLabel = new QLabel(tr("Output"));
+    outputLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    ioGrid->addWidget(outputLabel, 2, 0);
+    ioGrid->addWidget(m_outputCombo, 2, 1);
+    ioGrid->addWidget(m_outputMeter, 2, 2, 2, 1);
+
+    auto *volLabel = new QLabel(tr("Volume"));
+    volLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    ioGrid->addWidget(volLabel, 3, 0);
     auto *outVolRow = new QHBoxLayout;
+    outVolRow->setContentsMargins(0, 0, 0, 0);
     outVolRow->addWidget(m_outputVolumeSlider, 1);
     outVolRow->addWidget(m_playbackVolumeLabel);
-    outputForm->addRow(tr("Volume"), outVolRow);
-    outputBlock->addLayout(outputForm, 1);
-    outputBlock->addWidget(m_outputMeter, 1);
-    ioColumn->addLayout(outputBlock);
+    ioGrid->addLayout(outVolRow, 3, 1);
 
-    mainLayout->addLayout(ioColumn);
+    ioGrid->setColumnStretch(1, 2);
+    ioGrid->setColumnStretch(2, 1);
+    ioGrid->setColumnMinimumWidth(2, 160);
+    mainLayout->addLayout(ioGrid);
 
     m_waveform = new WaveformWidget;
     m_waveform->setToolTip(tr(
@@ -856,6 +868,77 @@ void MainWindow::applyPeaksToWaveform(const QVector<float> &left, const QVector<
     } else {
         m_waveform->setPeaks(m_autoScaleWaveform ? scale(left) : left);
     }
+}
+
+void MainWindow::resetLivePeaks(const QAudioFormat &fmt)
+{
+    m_livePeakL.clear();
+    m_livePeakR.clear();
+    m_livePeakPartialFrames = 0;
+    m_livePeakPartialL = 0.f;
+    m_livePeakPartialR = 0.f;
+    // ~10 ms per column: grows with the take, stretched to the widget width when painted.
+    const int rate = fmt.sampleRate() > 0 ? fmt.sampleRate() : 48000;
+    m_liveFramesPerBin = qMax(1, rate / 100);
+}
+
+void MainWindow::appendLivePeaksFromPcm(const QByteArray &chunk, const QAudioFormat &fmt)
+{
+    if (chunk.isEmpty() || fmt.bytesPerFrame() <= 0)
+        return;
+    const int bpf = fmt.bytesPerFrame();
+    const int ch = qMax(1, fmt.channelCount());
+    const int frames = chunk.size() / bpf;
+    if (frames <= 0)
+        return;
+
+    const bool stereo = ch >= 2;
+    if (fmt.sampleFormat() != QAudioFormat::Int16) {
+        // Fallback: rare during capture (we always record Int16).
+        const WavFile::ChannelPeaks chp = WavFile::channelPeaks(
+            m_recordPcm, fmt, qMax(32, peakBinCount()));
+        applyPeaksToWaveform(chp.left, chp.right);
+        return;
+    }
+
+    const auto *samples = reinterpret_cast<const qint16 *>(chunk.constData());
+    for (int f = 0; f < frames; ++f) {
+        float mxL = 0.f;
+        float mxR = 0.f;
+        for (int c = 0; c < ch; ++c) {
+            const float a = qAbs(samples[f * ch + c] / 32768.f);
+            if (c == 0)
+                mxL = qMax(mxL, a);
+            else
+                mxR = qMax(mxR, a);
+        }
+        if (!stereo)
+            mxR = mxL;
+        m_livePeakPartialL = qMax(m_livePeakPartialL, mxL);
+        m_livePeakPartialR = qMax(m_livePeakPartialR, mxR);
+        ++m_livePeakPartialFrames;
+        if (m_livePeakPartialFrames >= m_liveFramesPerBin) {
+            m_livePeakL.append(m_livePeakPartialL);
+            if (stereo)
+                m_livePeakR.append(m_livePeakPartialR);
+            m_livePeakPartialFrames = 0;
+            m_livePeakPartialL = 0.f;
+            m_livePeakPartialR = 0.f;
+        }
+    }
+
+    // Include in-progress partial column so the tip advances every tick.
+    QVector<float> left = m_livePeakL;
+    QVector<float> right = m_livePeakR;
+    if (m_livePeakPartialFrames > 0) {
+        left.append(m_livePeakPartialL);
+        if (stereo)
+            right.append(m_livePeakPartialR);
+    }
+    m_rawPeaks = left;
+    for (int i = 0; i < right.size() && i < m_rawPeaks.size(); ++i)
+        m_rawPeaks[i] = qMax(m_rawPeaks[i], right.at(i));
+    applyPeaksToWaveform(left, stereo ? right : QVector<float>());
 }
 
 void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt)
@@ -1184,6 +1267,12 @@ void MainWindow::onRecord()
 
     m_liveRecordPeaks.clear();
     m_recordPcm.clear();
+    {
+        QAudioFormat liveFmt = captureFormat();
+        if (m_capture && m_capture->isRunning() && m_capture->format().channelCount() > 0)
+            liveFmt = m_capture->format();
+        resetLivePeaks(liveFmt);
+    }
     if (!m_insertRecord) {
         m_waveform->clear();
     } else {
@@ -2299,29 +2388,13 @@ void MainWindow::onMeterTick()
             liveFmt.setSampleRate(48000);
             liveFmt.setChannelCount(qMax(1, m_recordChannelCount));
             if (m_insertRecord && !m_insertBasePeaks.isEmpty()) {
+                // Insert preview still uses a coarse full scan of the live tail only.
                 m_liveRecordPeaks = WavFile::peaks(m_recordPcm, liveFmt, qMax(32, peakBinCount() / 2));
                 updateInsertPreviewWaveform();
             } else {
-                // Same analysis as setWaveformFromPcm so live intensity matches post-stop.
-                // Peaks were already a full-PCM scan each drain; density is the same order.
-                const WavFile::ChannelPeaks ch = WavFile::channelPeaks(m_recordPcm, liveFmt, peakBinCount());
-                m_rawPeaks = WavFile::peaks(m_recordPcm, liveFmt, peakBinCount());
-                applyPeaksToWaveform(ch.left, ch.right);
-
-                float densScale = 1.f;
-                if (m_autoScaleWaveform) {
-                    float mx = 0.f;
-                    for (float v : m_rawPeaks)
-                        mx = qMax(mx, v);
-                    if (mx > 1e-6f)
-                        densScale = 1.f / mx;
-                }
-                const int timeBins = qBound(64, peakBinCount(), 4096);
-                const int ampBins = qBound(64, m_waveform ? m_waveform->height() : 128, 512);
-                m_waveform->setWaveformDensity(
-                    WavFile::waveformDensity(m_recordPcm, liveFmt, timeBins, ampBins, densScale));
-                m_waveform->setWaveformDensityAbs(
-                    WavFile::waveformDensityAbs(m_recordPcm, liveFmt, timeBins, ampBins, densScale));
+                // O(new samples) only — never rescan the whole take each tick.
+                // Density intensity is built once on stop (setWaveformFromPcm).
+                appendLivePeaksFromPcm(pcm, liveFmt);
             }
         }
         if (m_insertRecord && !m_insertBasePeaks.isEmpty()) {
