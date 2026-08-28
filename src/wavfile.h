@@ -49,6 +49,13 @@ QImage waveformDensity(const QByteArray &pcm, const QAudioFormat &format,
                        int timeBins = 800, int ampBins = 256, float scale = 1.f);
 
 /**
+ * Abs envelope density: |sample| with L (or mono) upward and R downward from the
+ * centre line. Same phosphor colouring as waveformDensity. Empty on failure.
+ */
+QImage waveformDensityAbs(const QByteArray &pcm, const QAudioFormat &format,
+                          int timeBins = 800, int ampBins = 256, float scale = 1.f);
+
+/**
  * Offline magnitude spectrogram (time × frequency), for display only.
  * Columns = time (left→right), rows = frequency (low at bottom).
  * Uses an in-tree real FFT (no extra dependency). Empty image on failure.

@@ -13,7 +13,7 @@ class WaveformWidget : public QWidget
 {
     Q_OBJECT
 public:
-    enum class DisplayMode { Waveform, Spectrogram };
+    enum class DisplayMode { Waveform, WaveformAbs, Spectrogram };
 
     explicit WaveformWidget(QWidget *parent = nullptr);
 
@@ -21,11 +21,12 @@ public:
     /** Stereo envelopes (L upper / R lower when painting silhouette). Empty right = mono. */
     void setChannelPeaks(const QVector<float> &left, const QVector<float> &right);
     /**
-     * Intensity-graded waveform (time →, amplitude ↑). Empty clears density.
-     * Preferred over setPeaks silhouette when non-null.
+     * Intensity-graded bipolar waveform (time →, amplitude −1…+1). Empty clears.
      * Stereo density uses green (L) + cyan (R) phosphor blend.
      */
     void setWaveformDensity(const QImage &image);
+    /** Abs envelope density (L/mono ↑, R ↓ from centre). Empty clears. */
+    void setWaveformDensityAbs(const QImage &image);
     /** Offline spectrogram image (time →, frequency ↑). Empty clears spectrogram. */
     void setSpectrogram(const QImage &image);
     void setDisplayMode(DisplayMode mode);
@@ -82,8 +83,10 @@ private:
     QVector<float> m_peaks;
     QVector<float> m_peaksL;
     QVector<float> m_peaksR;
-    /** Oscilloscope-style density image; used in Waveform mode when non-null. */
+    /** Bipolar density; used in Waveform mode when non-null. */
     QImage m_waveDensity;
+    /** Abs half-plane density; used in WaveformAbs mode when non-null. */
+    QImage m_waveDensityAbs;
     QImage m_spectrogram;
     /** Cached body (wave or spectrogram) without selection/playhead. */
     QPixmap m_bodyCache;

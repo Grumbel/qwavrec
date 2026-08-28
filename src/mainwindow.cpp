@@ -43,6 +43,7 @@
 #include <QApplication>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPolygon>
 #include <QPixmap>
 #include <QKeySequence>
 #include <QCloseEvent>
@@ -413,11 +414,36 @@ void MainWindow::createActions()
     m_viewModeGroup->setExclusive(true);
 
     m_waveformViewAction = new QAction(waveIcon, tr("&Waveform"), this);
-    m_waveformViewAction->setStatusTip(tr("Show amplitude waveform"));
+    m_waveformViewAction->setStatusTip(tr("Show bipolar intensity waveform (−1…+1)"));
     m_waveformViewAction->setCheckable(true);
     m_waveformViewAction->setChecked(true);
     m_waveformViewAction->setToolTip(tr("Waveform"));
     m_viewModeGroup->addAction(m_waveformViewAction);
+
+    auto paintAbsIcon = []() {
+        QPixmap pix(24, 24);
+        pix.fill(Qt::transparent);
+        QPainter p(&pix);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(40, 180, 90), 2.0));
+        p.drawLine(2, 12, 22, 12);
+        // L up / R down abs lobes
+        p.setBrush(QColor(40, 180, 90, 160));
+        p.setPen(Qt::NoPen);
+        QPolygonF up;
+        up << QPointF(4, 12) << QPointF(8, 4) << QPointF(12, 12) << QPointF(16, 6) << QPointF(20, 12);
+        p.drawPolygon(up);
+        p.setBrush(QColor(40, 160, 220, 160));
+        QPolygonF down;
+        down << QPointF(4, 12) << QPointF(8, 20) << QPointF(12, 12) << QPointF(16, 18) << QPointF(20, 12);
+        p.drawPolygon(down);
+        return QIcon(pix);
+    };
+    m_waveformAbsAction = new QAction(paintAbsIcon(), tr("Waveform &Abs"), this);
+    m_waveformAbsAction->setStatusTip(tr("Show |amplitude| with left up and right down from centre"));
+    m_waveformAbsAction->setCheckable(true);
+    m_waveformAbsAction->setToolTip(tr("Abs waveform (L↑ R↓)"));
+    m_viewModeGroup->addAction(m_waveformAbsAction);
 
     m_spectrogramAction = new QAction(specIcon, tr("S&pectrogram"), this);
     m_spectrogramAction->setStatusTip(tr("Show a frequency spectrogram instead of the amplitude waveform"));
@@ -470,6 +496,7 @@ void MainWindow::createMenus()
     viewMenu->addAction(m_historyAction);
     viewMenu->addSeparator();
     viewMenu->addAction(m_waveformViewAction);
+    viewMenu->addAction(m_waveformAbsAction);
     viewMenu->addAction(m_spectrogramAction);
     viewMenu->addSeparator();
     viewMenu->addAction(m_autoScaleAction);
@@ -500,6 +527,7 @@ void MainWindow::createToolBar()
     tb->addSeparator();
     // Display mode (exclusive checkable actions ≈ radio buttons)
     tb->addAction(m_waveformViewAction);
+    tb->addAction(m_waveformAbsAction);
     tb->addAction(m_spectrogramAction);
     tb->addAction(m_stereoAction);
 
@@ -634,7 +662,7 @@ void MainWindow::loadSettings()
     const bool loop = s.value(QStringLiteral("playback/loop"), false).toBool();
     const bool insertRec = s.value(QStringLiteral("playback/insertRecord"), false).toBool();
     const bool autoScale = s.value(QStringLiteral("view/autoScaleWaveform"), false).toBool();
-    const bool spectrogram = s.value(QStringLiteral("view/spectrogram"), false).toBool();
+    // view/mode preferred; view/spectrogram kept as legacy fallback inside block below
 
     m_restoringSettings = true;
     m_inputVolumeSlider->setValue(qBound(0, mic, 300));
@@ -650,15 +678,29 @@ void MainWindow::loadSettings()
     if (m_stereoAction)
         m_stereoAction->setChecked(m_preferStereo);
     m_autoScaleAction->setChecked(autoScale);
-    m_spectrogramMode = spectrogram;
-    if (m_waveformViewAction && m_spectrogramAction) {
-        m_waveformViewAction->setChecked(!spectrogram);
-        m_spectrogramAction->setChecked(spectrogram);
+    {
+        const QString vm = s.value(QStringLiteral("view/mode"), QString()).toString();
+        if (vm == QLatin1String("abs"))
+            m_viewMode = ViewMode::WaveformAbs;
+        else if (vm == QLatin1String("spectrogram")
+                 || s.value(QStringLiteral("view/spectrogram"), false).toBool())
+            m_viewMode = ViewMode::Spectrogram;
+        else
+            m_viewMode = ViewMode::Waveform;
     }
-    if (m_waveform)
-        m_waveform->setDisplayMode(m_spectrogramMode
-            ? WaveformWidget::DisplayMode::Spectrogram
-            : WaveformWidget::DisplayMode::Waveform);
+    if (m_waveformViewAction && m_waveformAbsAction && m_spectrogramAction) {
+        m_waveformViewAction->setChecked(m_viewMode == ViewMode::Waveform);
+        m_waveformAbsAction->setChecked(m_viewMode == ViewMode::WaveformAbs);
+        m_spectrogramAction->setChecked(m_viewMode == ViewMode::Spectrogram);
+    }
+    if (m_waveform) {
+        if (m_viewMode == ViewMode::Spectrogram)
+            m_waveform->setDisplayMode(WaveformWidget::DisplayMode::Spectrogram);
+        else if (m_viewMode == ViewMode::WaveformAbs)
+            m_waveform->setDisplayMode(WaveformWidget::DisplayMode::WaveformAbs);
+        else
+            m_waveform->setDisplayMode(WaveformWidget::DisplayMode::Waveform);
+    }
     const bool showTakes = s.value(QStringLiteral("view/takesPanel"), false).toBool();
     if (m_takesDock) {
         m_takesDock->setVisible(showTakes);
@@ -684,7 +726,15 @@ void MainWindow::saveSettings()
                m_insertRecordAction && m_insertRecordAction->isChecked());
     s.setValue(QStringLiteral("view/autoScaleWaveform"), m_autoScaleWaveform);
     s.setValue(QStringLiteral("capture/stereo"), m_preferStereo);
-    s.setValue(QStringLiteral("view/spectrogram"), m_spectrogramMode);
+    {
+        QString vm = QStringLiteral("waveform");
+        if (m_viewMode == ViewMode::WaveformAbs)
+            vm = QStringLiteral("abs");
+        else if (m_viewMode == ViewMode::Spectrogram)
+            vm = QStringLiteral("spectrogram");
+        s.setValue(QStringLiteral("view/mode"), vm);
+        s.setValue(QStringLiteral("view/spectrogram"), m_viewMode == ViewMode::Spectrogram);
+    }
     s.setValue(QStringLiteral("view/takesPanel"), m_takesDock && m_takesDock->isVisible());
 }
 
@@ -816,17 +866,21 @@ void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &f
     // Amplitude bins ≈ widget height for 1:1 vertical detail when painted.
     const int ampBins = qBound(64, m_waveform ? m_waveform->height() : 128, 512);
     m_waveform->setWaveformDensity(WavFile::waveformDensity(pcm, fmt, timeBins, ampBins, densScale));
+    m_waveform->setWaveformDensityAbs(WavFile::waveformDensityAbs(pcm, fmt, timeBins, ampBins, densScale));
 
-    if (m_spectrogramMode && !pcm.isEmpty()) {
+    if (m_viewMode == ViewMode::Spectrogram && !pcm.isEmpty()) {
         // Match horizontal resolution to the drawable width for detail when maximized.
         const int specBins = qBound(64, peakBinCount(), 2048);
         m_waveform->setSpectrogram(WavFile::spectrogram(pcm, fmt, specBins, 256));
     } else {
         m_waveform->setSpectrogram(QImage());
     }
-    m_waveform->setDisplayMode(m_spectrogramMode
-        ? WaveformWidget::DisplayMode::Spectrogram
-        : WaveformWidget::DisplayMode::Waveform);
+    if (m_viewMode == ViewMode::Spectrogram)
+        m_waveform->setDisplayMode(WaveformWidget::DisplayMode::Spectrogram);
+    else if (m_viewMode == ViewMode::WaveformAbs)
+        m_waveform->setDisplayMode(WaveformWidget::DisplayMode::WaveformAbs);
+    else
+        m_waveform->setDisplayMode(WaveformWidget::DisplayMode::Waveform);
 }
 
 int MainWindow::peakBinCount() const
@@ -1117,6 +1171,7 @@ void MainWindow::onRecord()
     } else {
         // Keep peaks for insert preview; drop stale density/spectrogram so live falls back to peak paint.
         m_waveform->setWaveformDensity(QImage());
+        m_waveform->setWaveformDensityAbs(QImage());
         m_waveform->setSpectrogram(QImage());
     }
     m_recordTimer.restart();
@@ -1677,10 +1732,14 @@ void MainWindow::onViewModeTriggered(QAction *action)
 {
     if (!action)
         return;
-    const bool on = (action == m_spectrogramAction);
-    if (m_spectrogramMode == on)
+    ViewMode mode = ViewMode::Waveform;
+    if (action == m_waveformAbsAction)
+        mode = ViewMode::WaveformAbs;
+    else if (action == m_spectrogramAction)
+        mode = ViewMode::Spectrogram;
+    if (m_viewMode == mode)
         return;
-    m_spectrogramMode = on;
+    m_viewMode = mode;
     applyDisplayMode();
     if (!m_restoringSettings)
         saveSettings();
@@ -1690,18 +1749,20 @@ void MainWindow::applyDisplayMode()
 {
     if (!m_waveform)
         return;
-    m_waveform->setDisplayMode(m_spectrogramMode
-        ? WaveformWidget::DisplayMode::Spectrogram
-        : WaveformWidget::DisplayMode::Waveform);
-    if (!m_spectrogramMode)
-        return;
-    // Build spectrogram from the current document PCM when available.
-    if (m_player && !m_player->pcm().isEmpty()) {
-        m_waveform->setSpectrogram(WavFile::spectrogram(
-            m_player->pcm(), m_player->format(), qBound(64, peakBinCount(), 2048), 256));
+    if (m_viewMode == ViewMode::Spectrogram)
+        m_waveform->setDisplayMode(WaveformWidget::DisplayMode::Spectrogram);
+    else if (m_viewMode == ViewMode::WaveformAbs)
+        m_waveform->setDisplayMode(WaveformWidget::DisplayMode::WaveformAbs);
+    else
+        m_waveform->setDisplayMode(WaveformWidget::DisplayMode::Waveform);
+
+    // Rebuild analysis images from the current document when available.
+    if (m_player && !m_player->pcm().isEmpty() && m_state != AppState::Recording) {
+        setWaveformFromPcm(m_player->pcm(), m_player->format());
         return;
     }
-    if (!m_recordPcm.isEmpty() && m_state == AppState::Recording) {
+    if (m_state == AppState::Recording && !m_recordPcm.isEmpty()
+        && m_viewMode == ViewMode::Spectrogram) {
         QAudioFormat liveFmt;
         liveFmt.setSampleFormat(QAudioFormat::Int16);
         liveFmt.setSampleRate(48000);
@@ -1710,6 +1771,7 @@ void MainWindow::applyDisplayMode()
             m_recordPcm, liveFmt, qBound(64, peakBinCount(), 2048), 256));
     }
 }
+
 
 
 void MainWindow::activateHistoryTake(const QString &path)

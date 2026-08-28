@@ -160,6 +160,7 @@ private:
     QAction *m_autoScaleAction = nullptr;
     QAction *m_stereoAction = nullptr;
     QAction *m_waveformViewAction = nullptr;
+    QAction *m_waveformAbsAction = nullptr;
     QAction *m_spectrogramAction = nullptr;
     QActionGroup *m_viewModeGroup = nullptr;
     QAction *m_historyAction = nullptr;
@@ -228,7 +229,8 @@ private:
     bool m_preferStereo = true;
     /** Channel count used for the current/last recording session. */
     int m_recordChannelCount = 1;
-    bool m_spectrogramMode = false;
+    enum class ViewMode { Waveform, WaveformAbs, Spectrogram };
+    ViewMode m_viewMode = ViewMode::Waveform;
     /** Skip Stopped→Ready side effects while switching takes under playback. */
     bool m_resumePlayAfterTakeLoad = false;
     bool m_monitoring = false;

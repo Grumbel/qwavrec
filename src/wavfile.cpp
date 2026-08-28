@@ -530,6 +530,96 @@ QImage waveformDensity(const QByteArray &pcm, const QAudioFormat &format,
 }
 
 
+QImage waveformDensityAbs(const QByteArray &pcm, const QAudioFormat &format,
+                          int timeBins, int ampBins, float scale)
+{
+    QImage img;
+    const int bpf = format.bytesPerFrame();
+    if (bpf <= 0 || pcm.isEmpty() || timeBins <= 0 || ampBins < 16)
+        return img;
+
+    const int frames = pcm.size() / bpf;
+    if (frames < 1)
+        return img;
+
+    timeBins = qBound(8, timeBins, 4096);
+    ampBins = qBound(32, ampBins, 512);
+    // Even height so mid splits cleanly
+    if (ampBins % 2)
+        ++ampBins;
+    scale = qMax(0.f, scale);
+
+    const int channels = qMax(1, format.channelCount());
+    const bool stereo = channels >= 2;
+    const int mid = ampBins / 2;
+
+    QVector<float> countsL(timeBins * ampBins, 0.f);
+    QVector<float> countsR(timeBins * ampBins, 0.f);
+    float maxCount = 0.f;
+    const double step = double(frames) / double(timeBins);
+
+    for (int col = 0; col < timeBins; ++col) {
+        const int a = int(col * step);
+        const int b = qMin(int((col + 1) * step), frames);
+        float *colL = countsL.data() + col * ampBins;
+        float *colR = countsR.data() + col * ampBins;
+        for (int f = a; f < b; ++f) {
+            forEachSampleInFrame(pcm, format, f, [&](float s, int ch) {
+                const float mag = qBound(0.f, qAbs(s) * scale, 1.f);
+                if (mag <= 0.f)
+                    return;
+                // L / mono → upper half (mid .. ampBins-1); R / mono → lower (0 .. mid-1)
+                if (!stereo || ch == 0) {
+                    int bin = mid + int(mag * float(mid));
+                    if (bin >= ampBins)
+                        bin = ampBins - 1;
+                    if (bin < mid)
+                        bin = mid;
+                    colL[bin] += 1.f;
+                }
+                if (!stereo || ch >= 1) {
+                    int bin = mid - 1 - int(mag * float(mid));
+                    if (bin < 0)
+                        bin = 0;
+                    if (bin >= mid)
+                        bin = mid - 1;
+                    colR[bin] += 1.f;
+                }
+            });
+        }
+        for (int row = 0; row < ampBins; ++row) {
+            maxCount = qMax(maxCount, colL[row]);
+            maxCount = qMax(maxCount, colR[row]);
+        }
+    }
+
+    if (maxCount < 1.f)
+        maxCount = 1.f;
+    const float logMax = std::log1p(maxCount);
+
+    img = QImage(timeBins, ampBins, QImage::Format_RGB32);
+    img.fill(qRgb(18, 22, 28));
+    for (int col = 0; col < timeBins; ++col) {
+        const float *colL = countsL.constData() + col * ampBins;
+        const float *colR = countsR.constData() + col * ampBins;
+        for (int row = 0; row < ampBins; ++row) {
+            const float cL = colL[row];
+            const float cR = colR[row];
+            if (cL <= 0.f && cR <= 0.f)
+                continue;
+            const float tL = std::log1p(cL) / logMax;
+            const float tR = std::log1p(cR) / logMax;
+            const int imgRow = ampBins - 1 - row;
+            if (stereo)
+                img.setPixel(col, imgRow, phosphorStereoRgb(tL, tR));
+            else
+                img.setPixel(col, imgRow, phosphorToRgb(qMax(tL, tR)));
+        }
+    }
+    return img;
+}
+
+
 QImage spectrogram(const QByteArray &pcm, const QAudioFormat &format,
                    int timeBins, int fftSize)
 {

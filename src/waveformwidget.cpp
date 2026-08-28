@@ -60,6 +60,15 @@ void WaveformWidget::setWaveformDensity(const QImage &image)
     update();
 }
 
+void WaveformWidget::setWaveformDensityAbs(const QImage &image)
+{
+    if (m_waveDensityAbs == image)
+        return;
+    m_waveDensityAbs = image;
+    invalidateBodyCache();
+    update();
+}
+
 void WaveformWidget::setSpectrogram(const QImage &image)
 {
     m_spectrogram = image;
@@ -82,6 +91,7 @@ void WaveformWidget::clear()
     m_peaksL.clear();
     m_peaksR.clear();
     m_waveDensity = QImage();
+    m_waveDensityAbs = QImage();
     m_spectrogram = QImage();
     m_playbackPos = 0.0;
     clearSelection();
@@ -112,21 +122,25 @@ void WaveformWidget::ensureBodyCache()
     m_bodyCache = QPixmap(r.size());
     m_bodyCache.fill(QColor(18, 22, 28));
     QPainter p(&m_bodyCache);
-    p.setRenderHint(QPainter::Antialiasing, m_mode == DisplayMode::Waveform && m_peaks.size() < 800);
+    const bool waveLike = (m_mode == DisplayMode::Waveform || m_mode == DisplayMode::WaveformAbs);
+    p.setRenderHint(QPainter::Antialiasing, waveLike && m_peaks.size() < 800);
     p.setPen(QColor(40, 48, 58));
     p.drawRect(0, 0, r.width() - 1, r.height() - 1);
     const QRect inner = QRect(1, 1, r.width() - 2, r.height() - 2);
     const bool useSpec = (m_mode == DisplayMode::Spectrogram && !m_spectrogram.isNull());
     if (useSpec) {
         paintSpectrogram(p, inner);
-    } else if (!m_waveDensity.isNull()) {
-        paintWaveform(p, inner);
-    } else if (!m_peaks.isEmpty()) {
+    } else if (waveLike && (!m_waveDensity.isNull() || !m_waveDensityAbs.isNull()
+                            || !m_peaks.isEmpty() || !m_peaksL.isEmpty())) {
         paintWaveform(p, inner);
     } else {
         p.setPen(QColor(90, 100, 110));
-        p.drawText(inner, Qt::AlignCenter,
-                   m_mode == DisplayMode::Spectrogram ? tr("No spectrogram") : tr("No waveform"));
+        QString msg = tr("No waveform");
+        if (m_mode == DisplayMode::Spectrogram)
+            msg = tr("No spectrogram");
+        else if (m_mode == DisplayMode::WaveformAbs)
+            msg = tr("No abs waveform");
+        p.drawText(inner, Qt::AlignCenter, msg);
     }
     m_bodyCacheDirty = false;
 }
@@ -205,7 +219,7 @@ void WaveformWidget::setHover(Hit h)
 
 void WaveformWidget::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && (!m_peaks.isEmpty() || !m_waveDensity.isNull() || !m_spectrogram.isNull())) {
+    if (event->button() == Qt::LeftButton && (!m_peaks.isEmpty() || !m_peaksL.isEmpty() || !m_waveDensity.isNull() || !m_waveDensityAbs.isNull() || !m_spectrogram.isNull())) {
         const qreal x = event->position().x();
         const qreal p = posFromX(x);
         const Hit hit = hitTest(x);
@@ -233,7 +247,7 @@ void WaveformWidget::mouseMoveEvent(QMouseEvent *event)
     const qreal p = posFromX(x);
 
     if (m_drag == Drag::None) {
-        if (!m_peaks.isEmpty() || !m_waveDensity.isNull() || !m_spectrogram.isNull())
+        if (!m_peaks.isEmpty() || !m_peaksL.isEmpty() || !m_waveDensity.isNull() || !m_waveDensityAbs.isNull() || !m_spectrogram.isNull())
             setHover(hitTest(x));
         QWidget::mouseMoveEvent(event);
         return;
@@ -334,16 +348,27 @@ void WaveformWidget::paintEvent(QPaintEvent *)
 
 void WaveformWidget::paintWaveform(QPainter &p, const QRect &r)
 {
-    // Prefer intensity-graded density image (oscilloscope-style) when available.
-    if (!m_waveDensity.isNull()) {
+    // Prefer intensity-graded density image when available for the active mode.
+    const QImage *density = nullptr;
+    if (m_mode == DisplayMode::WaveformAbs && !m_waveDensityAbs.isNull())
+        density = &m_waveDensityAbs;
+    else if (m_mode == DisplayMode::Waveform && !m_waveDensity.isNull())
+        density = &m_waveDensity;
+    else if (m_mode == DisplayMode::WaveformAbs && !m_waveDensity.isNull())
+        density = &m_waveDensity; // soft fallback
+    else if (!m_waveDensity.isNull())
+        density = &m_waveDensity;
+
+    if (density) {
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        p.drawImage(r, m_waveDensity);
+        p.drawImage(r, *density);
         const qreal mid = r.center().y();
         p.setPen(QPen(QColor(20, 50, 30), 1, Qt::DotLine));
         p.drawLine(r.left(), int(mid), r.right(), int(mid));
         return;
     }
 
+    // Silhouette fallback: always L↑ / R↓ on abs peaks when stereo
     const bool stereo = !m_peaksL.isEmpty() && !m_peaksR.isEmpty()
                         && m_peaksL.size() == m_peaksR.size();
     const int n = stereo ? m_peaksL.size() : m_peaks.size();
