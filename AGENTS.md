@@ -40,15 +40,16 @@ Delivery of changes in this workflow uses **stacking git bundles**
 │  - QTimer ~20 Hz → onMeterTick()            │
 └───────────────┬─────────────────────────────┘
                 │
-     ┌──────────┼──────────┐
-     ▼          ▼          ▼
-PulseCapture  PulsePlayback  PulseDevices
- (worker)      (worker)       (sync, rare)
-     │              │
-  pa_simple      pa_simple
-  RECORD         PLAYBACK
-     │              │
-     └──── PulseAudio / PipeWire (via pulse) ──┘
+     ┌──────────┼──────────┬────────────────┐
+     ▼          ▼          ▼                ▼
+PulseCapture  PulsePlayback  PulseDevices  PulseDeviceWatcher
+ (worker)      (worker)       (one-shot)    (worker + subscribe)
+     │              │              │              │
+  pa_simple      pa_simple    pa_context    pa_context (long-lived)
+  RECORD         PLAYBACK     list once     SOURCE/SINK/SERVER events
+     │              │              │              │
+     └──────────────┴──────────────┴──────────────┘
+                    PulseAudio / PipeWire (via pulse)
 ```
 
 - **GUI thread must never block** on `pa_simple_read/write` or on long
@@ -70,13 +71,21 @@ Qt `QMediaDevices::audioInputs()` **does not list monitor sources**
 Early code called default-source, list-sources, default-sink, list-sinks as
 **four separate connect/iterate cycles** → multi-second freezes.
 
-**Correct pattern:** `PulseDevices::query()` — **one** `pa_context` + mainloop:
+**One-shot list:** `PulseDevices::query()` — **one** `pa_context` + mainloop
+(server info → sources including monitors → sinks). Cap iterate loops so a
+hung server cannot freeze the app forever. Prefer this only as a fallback
+before the watcher has published its first snapshot.
 
-1. `pa_context_get_server_info` → default source/sink names  
-2. `pa_context_get_source_info_list` → sources (tag monitors)  
-3. `pa_context_get_sink_info_list` → sinks  
+**Hotplug (preferred):** `PulseDeviceWatcher` owns a **long-lived**
+`pa_context` on a **worker thread**:
 
-Cap iterate loops so a hung server cannot freeze the app forever.
+1. Connect and `pa_context_subscribe` (SOURCE | SINK | SERVER)  
+2. On events, set dirty and re-enumerate on that thread  
+3. Publish a mutex-protected snapshot; `emit devicesChanged()`  
+4. GUI debounces (~100 ms) and rebuilds combos from `snapshot()`  
+
+Never run the watcher mainloop or blocking `pa_mainloop_iterate` on the
+GUI thread.
 
 ### `pa_simple` is blocking — design around that
 
@@ -210,7 +219,7 @@ if that need returns without turning the app into an editor.
 
 1. Plan before large edits; prefer small commits.  
 2. **Never block the GUI thread** on Pulse I/O or long sleeps.  
-3. Device list = **one** Pulse connection.  
+3. Device list = watcher snapshot (or one-shot query fallback); no poll timer.  
 4. Meter/PCM path = atomics + timer, not 50 Hz signal storms.  
 5. Monitors are a **hard requirement** — keep libpulse enumeration.  
 6. Stack git bundles cleanly if that delivery process is in use.  
@@ -221,10 +230,8 @@ if that need returns without turning the app into an editor.
 - `pa_simple` cannot cancel a blocked read; stop is cooperative after the
   current fragment (~20 ms with our `fragsize`).  
 - Full-file PCM in memory limits practical take length.  
-- Device lists refresh every ~2.5s (no Pulse subscription yet); full event-driven hotplug remains future work.  
-- Device list still runs synchronously on the GUI thread (one connection,
-  but can hitch briefly on a slow server) — a future improvement is a
-  worker + cached list.  
+- Device hotplug uses `PulseDeviceWatcher` (subscription on a worker thread);
+  the GUI only reads a cached snapshot and debounces combo rebuilds.  
 - Select/cut of regions is still a TODO beyond A–B play/loop.
 
 ### Residual record-stop hitches (post-83b8764 investigation)
