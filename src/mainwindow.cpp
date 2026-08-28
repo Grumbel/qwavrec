@@ -870,75 +870,59 @@ void MainWindow::applyPeaksToWaveform(const QVector<float> &left, const QVector<
     }
 }
 
-void MainWindow::resetLivePeaks(const QAudioFormat &fmt)
+void MainWindow::updateLiveRecordWaveform(const QAudioFormat &fmt)
 {
-    m_livePeakL.clear();
-    m_livePeakR.clear();
-    m_livePeakPartialFrames = 0;
-    m_livePeakPartialL = 0.f;
-    m_livePeakPartialR = 0.f;
-    // ~10 ms per column: grows with the take, stretched to the widget width when painted.
-    const int rate = fmt.sampleRate() > 0 ? fmt.sampleRate() : 48000;
-    m_liveFramesPerBin = qMax(1, rate / 100);
-}
-
-void MainWindow::appendLivePeaksFromPcm(const QByteArray &chunk, const QAudioFormat &fmt)
-{
-    if (chunk.isEmpty() || fmt.bytesPerFrame() <= 0)
+    if (m_recordPcm.isEmpty() || fmt.bytesPerFrame() <= 0 || !m_waveform)
         return;
+
     const int bpf = fmt.bytesPerFrame();
-    const int ch = qMax(1, fmt.channelCount());
-    const int frames = chunk.size() / bpf;
-    if (frames <= 0)
+    const int rate = fmt.sampleRate() > 0 ? fmt.sampleRate() : 48000;
+    const int windowFrames = qMax(1, rate * kLiveWaveformWindowMs / 1000);
+    const int totalFrames = m_recordPcm.size() / bpf;
+    const int startFrame = qMax(0, totalFrames - windowFrames);
+    const int nFrames = totalFrames - startFrame;
+    if (nFrames <= 0)
         return;
 
-    const bool stereo = ch >= 2;
-    if (fmt.sampleFormat() != QAudioFormat::Int16) {
-        // Fallback: rare during capture (we always record Int16).
-        const WavFile::ChannelPeaks chp = WavFile::channelPeaks(
-            m_recordPcm, fmt, qMax(32, peakBinCount()));
-        applyPeaksToWaveform(chp.left, chp.right);
-        return;
-    }
+    // View of the trailing window only — cost is O(window), not O(whole take).
+    const QByteArray view = QByteArray::fromRawData(
+        m_recordPcm.constData() + startFrame * bpf, nFrames * bpf);
 
-    const auto *samples = reinterpret_cast<const qint16 *>(chunk.constData());
-    for (int f = 0; f < frames; ++f) {
-        float mxL = 0.f;
-        float mxR = 0.f;
-        for (int c = 0; c < ch; ++c) {
-            const float a = qAbs(samples[f * ch + c] / 32768.f);
-            if (c == 0)
-                mxL = qMax(mxL, a);
-            else
-                mxR = qMax(mxR, a);
-        }
-        if (!stereo)
-            mxR = mxL;
-        m_livePeakPartialL = qMax(m_livePeakPartialL, mxL);
-        m_livePeakPartialR = qMax(m_livePeakPartialR, mxR);
-        ++m_livePeakPartialFrames;
-        if (m_livePeakPartialFrames >= m_liveFramesPerBin) {
-            m_livePeakL.append(m_livePeakPartialL);
-            if (stereo)
-                m_livePeakR.append(m_livePeakPartialR);
-            m_livePeakPartialFrames = 0;
-            m_livePeakPartialL = 0.f;
-            m_livePeakPartialR = 0.f;
-        }
+    const int bins = peakBinCount();
+    const WavFile::ChannelPeaks ch = WavFile::channelPeaks(view, fmt, bins);
+    m_rawPeaks.resize(ch.left.size());
+    for (int i = 0; i < ch.left.size(); ++i) {
+        float v = ch.left.at(i);
+        if (i < ch.right.size())
+            v = qMax(v, ch.right.at(i));
+        m_rawPeaks[i] = v;
     }
+    applyPeaksToWaveform(ch.left, ch.right);
 
-    // Include in-progress partial column so the tip advances every tick.
-    QVector<float> left = m_livePeakL;
-    QVector<float> right = m_livePeakR;
-    if (m_livePeakPartialFrames > 0) {
-        left.append(m_livePeakPartialL);
-        if (stereo)
-            right.append(m_livePeakPartialR);
+    // Intensity only for the active mode (one full pass over the window).
+    float densScale = 1.f;
+    if (m_autoScaleWaveform) {
+        float mx = 0.f;
+        for (float v : m_rawPeaks)
+            mx = qMax(mx, v);
+        if (mx > 1e-6f)
+            densScale = 1.f / mx;
     }
-    m_rawPeaks = left;
-    for (int i = 0; i < right.size() && i < m_rawPeaks.size(); ++i)
-        m_rawPeaks[i] = qMax(m_rawPeaks[i], right.at(i));
-    applyPeaksToWaveform(left, stereo ? right : QVector<float>());
+    const int timeBins = qBound(64, bins, 4096);
+    const int ampBins = qBound(64, m_waveform->height(), 512);
+    if (m_viewMode == ViewMode::WaveformAbs) {
+        m_waveform->setWaveformDensity(QImage());
+        m_waveform->setWaveformDensityAbs(
+            WavFile::waveformDensityAbs(view, fmt, timeBins, ampBins, densScale));
+    } else if (m_viewMode == ViewMode::Waveform) {
+        m_waveform->setWaveformDensityAbs(QImage());
+        m_waveform->setWaveformDensity(
+            WavFile::waveformDensity(view, fmt, timeBins, ampBins, densScale));
+    } else {
+        // Spectrogram while recording: keep peak envelope only (FFT is costly).
+        m_waveform->setWaveformDensity(QImage());
+        m_waveform->setWaveformDensityAbs(QImage());
+    }
 }
 
 void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt)
@@ -1267,12 +1251,6 @@ void MainWindow::onRecord()
 
     m_liveRecordPeaks.clear();
     m_recordPcm.clear();
-    {
-        QAudioFormat liveFmt = captureFormat();
-        if (m_capture && m_capture->isRunning() && m_capture->format().channelCount() > 0)
-            liveFmt = m_capture->format();
-        resetLivePeaks(liveFmt);
-    }
     if (!m_insertRecord) {
         m_waveform->clear();
     } else {
@@ -2392,9 +2370,8 @@ void MainWindow::onMeterTick()
                 m_liveRecordPeaks = WavFile::peaks(m_recordPcm, liveFmt, qMax(32, peakBinCount() / 2));
                 updateInsertPreviewWaveform();
             } else {
-                // O(new samples) only — never rescan the whole take each tick.
-                // Density intensity is built once on stop (setWaveformFromPcm).
-                appendLivePeaksFromPcm(pcm, liveFmt);
+                // Close-up of the last few seconds only (fixed cost per tick).
+                updateLiveRecordWaveform(liveFmt);
             }
         }
         if (m_insertRecord && !m_insertBasePeaks.isEmpty()) {

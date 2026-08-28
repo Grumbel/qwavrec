@@ -229,15 +229,9 @@ private:
     bool m_preferStereo = true;
     /** Channel count used for the current/last recording session. */
     int m_recordChannelCount = 1;
-    /** Live peak columns (fixed time quanta); only new samples scanned. */
-    QVector<float> m_livePeakL;
-    QVector<float> m_livePeakR;
-    int m_liveFramesPerBin = 1;
-    int m_livePeakPartialFrames = 0;
-    float m_livePeakPartialL = 0.f;
-    float m_livePeakPartialR = 0.f;
-    void appendLivePeaksFromPcm(const QByteArray &chunk, const QAudioFormat &fmt);
-    void resetLivePeaks(const QAudioFormat &fmt);
+    /** Live monitor shows only the trailing window (not the whole take). */
+    static constexpr int kLiveWaveformWindowMs = 5000;
+    void updateLiveRecordWaveform(const QAudioFormat &fmt);
     enum class ViewMode { Waveform, WaveformAbs, Spectrogram };
     ViewMode m_viewMode = ViewMode::Waveform;
     /** Skip Stopped→Ready side effects while switching takes under playback. */
