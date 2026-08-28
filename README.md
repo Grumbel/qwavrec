@@ -40,6 +40,8 @@ nix build
 nix flake check    # compile + REUSE license lint
 ```
 
+Version is read from the top-level `VERSION` file. Development builds (`…-dev`) get a Nix-appended `.{revCount}+g{shortRev}` string shown by `qwavrec --version` and Help → About.
+
 ### Manual
 
 Requires Qt 6 (Core, Gui, Widgets, Multimedia) and CMake ≥ 3.16.

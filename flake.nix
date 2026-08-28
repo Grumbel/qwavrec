@@ -10,10 +10,20 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
+        lib = pkgs.lib;
+
+        versionBase = lib.strings.removeSuffix "\n" (builtins.readFile ./VERSION);
+        gitRev = self.shortRev or self.dirtyShortRev or "dirty";
+        isDev = lib.strings.hasInfix "-dev" versionBase;
+        version =
+          if isDev then
+            "${versionBase}.${toString (self.revCount or 0)}+g${gitRev}"
+          else
+            versionBase;
 
         qwavrec = pkgs.stdenv.mkDerivation {
           pname = "qwavrec";
-          version = "0.1.0";
+          inherit version;
 
           src = ./.;
 
@@ -31,9 +41,10 @@
 
           cmakeFlags = [
             "-DCMAKE_BUILD_TYPE=Release"
+            "-DPROJECT_VERSION_FULL=${version}"
           ];
 
-          meta = with pkgs.lib; {
+          meta = with lib; {
             description = "Simple PipeWire audio player and recorder";
             homepage = "https://github.com/grumbel/qwavrec";
             license = licenses.gpl3Plus;

@@ -29,6 +29,17 @@ nix develop        # shell with cmake/qt
 nix flake check    # build package + REUSE lint
 ```
 
+## Version number
+
+- **Source of truth:** top-level `VERSION` (plain text, e.g. `0.1.0-dev`).
+- **In git:** always `…-dev` on the main branch.
+- **Nix:** if `-dev`, append `.{revCount}+g{shortRev}` (`self.revCount or 0`);
+  pass `-DPROJECT_VERSION_FULL=…` into CMake. Releases (no `-dev`) use the file as-is.
+- **CMake:** reads `VERSION` or `PROJECT_VERSION_FULL`; numeric part only for `project(VERSION …)`.
+- **App:** `QWAVREC_VERSION` / `QApplication::applicationVersion()` for `--version` and About.
+- **Release:** set `VERSION` to `x.y.z`, commit, tag `vx.y.z`, then bump to next `…-dev`.
+
+
 Delivery of changes in this workflow uses **stacking git bundles**
 (`qwavrec-NNN-*.bundle`), continuously numbered, `HEAD` as ref.
 
@@ -216,7 +227,8 @@ if that need returns without turning the app into an editor.
 | `src/levelmeter.*` | Input/output level widgets |
 | `src/recordinghistory.*` | Cache takes under XDG |
 | `src/historydialog.*` | Take browser dialog |
-| `flake.nix` / `CMakeLists.txt` | Nix + Qt + libpulse |
+| `VERSION` | Sole version source (`0.1.0-dev` in git) |
+| `flake.nix` / `CMakeLists.txt` | Nix + Qt + libpulse; full version from `VERSION` |
 
 ## Working rules for agents
 

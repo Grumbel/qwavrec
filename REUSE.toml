@@ -8,6 +8,7 @@ path = [
     "TODO.md",
     "AGENTS.md",
     "screenshot.png",
+    "VERSION",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Ingo Ruhnke <grumbel@gmail.com>"

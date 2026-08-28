@@ -4,13 +4,25 @@
 #include "mainwindow.h"
 
 #include <QApplication>
+#include <QCommandLineParser>
+
+#ifndef QWAVREC_VERSION
+#  define QWAVREC_VERSION "0.0.0"
+#endif
 
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    QApplication::setApplicationName("QWavRec");
-    QApplication::setApplicationVersion("0.1.0");
-    QApplication::setOrganizationName("QWavRec");
+    QApplication::setApplicationName(QStringLiteral("QWavRec"));
+    QApplication::setApplicationVersion(QStringLiteral(QWAVREC_VERSION));
+    QApplication::setOrganizationName(QStringLiteral("QWavRec"));
+
+    QCommandLineParser parser;
+    parser.setApplicationDescription(
+        QStringLiteral("Simple WAV recorder/player (PulseAudio sources and sinks)."));
+    parser.addHelpOption();
+    parser.addVersionOption();
+    parser.process(app);
 
     MainWindow window;
     window.show();
