@@ -32,7 +32,7 @@
 #include <QListWidget>
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QAbstractButton>
+#include <QPushButton>
 #include <QStandardPaths>
 #include <QDir>
 #include <QList>
@@ -1909,11 +1909,11 @@ void MainWindow::onTakesDeleteRequested(const QList<int> &indices)
     box.setIcon(QMessageBox::Warning);
     box.setWindowTitle(unique.size() == 1 ? tr("Delete take") : tr("Delete takes"));
     box.setText(prompt);
-    QAbstractButton *deleteBtn = box.addButton(tr("Delete"), QMessageBox::DestructiveRole);
+    QPushButton *deleteBtn = box.addButton(tr("Delete"), QMessageBox::DestructiveRole);
     box.addButton(QMessageBox::Cancel);
     box.setDefaultButton(QMessageBox::Cancel);
     box.exec();
-    if (box.clickedButton() != deleteBtn)
+    if (box.clickedButton() != static_cast<QAbstractButton *>(deleteBtn))
         return;
 
     if (m_state == AppState::Playing || m_state == AppState::Paused) {
