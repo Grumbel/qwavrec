@@ -68,8 +68,9 @@ void TakesPanel::setTakes(const QStringList &takes, int currentIndex)
             ? fi.birthTime().toString(QLocale::system().dateTimeFormat(QLocale::ShortFormat))
             : fi.lastModified().toString(QLocale::system().dateTimeFormat(QLocale::ShortFormat));
         const qint64 kb = fi.size() / 1024;
-        const QString text = tr("%1.  %2  —  %3 KB  —  %4")
-            .arg(i + 1)
+        // No list ordinal — it shifts on every delete. Identity is the filename
+        // (rec-YYYYMMDD-HHMMSS-zzz.wav) plus size and time.
+        const QString text = tr("%1  —  %2 KB  —  %3")
             .arg(fi.fileName())
             .arg(kb)
             .arg(stamp);

@@ -1514,7 +1514,7 @@ void MainWindow::onUndo()
     updateWindowTitle();
     setAppState(AppState::Ready);
     statusBar()->showMessage(
-        tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size()), 3000);
+        tr("Loaded %1").arg(QFileInfo(path).fileName()), 3000);
     refreshTakesPanel();
 }
 
@@ -1538,7 +1538,7 @@ void MainWindow::onRedo()
     updateWindowTitle();
     setAppState(AppState::Ready);
     statusBar()->showMessage(
-        tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size()), 3000);
+        tr("Loaded %1").arg(QFileInfo(path).fileName()), 3000);
     refreshTakesPanel();
 }
 
@@ -1581,7 +1581,7 @@ void MainWindow::loadTakeAtIndex(int index)
     setAppState(AppState::Ready);
     updateWindowTitle();
     statusBar()->showMessage(
-        tr("Take %1/%2").arg(m_history.currentIndex() + 1).arg(m_history.takes().size()), 3000);
+        tr("Loaded %1").arg(QFileInfo(path).fileName()), 3000);
     // Keep list highlight in sync without re-entry load
     if (m_takesPanel)
         m_takesPanel->setTakes(m_history.takes(), m_history.currentIndex());
@@ -2190,8 +2190,9 @@ void MainWindow::updateWindowTitle()
     if (!m_savedPath.isEmpty()) {
         name = QFileInfo(m_savedPath).fileName();
     } else if (!m_tempPath.isEmpty()) {
+        // Prefer stable filename over list ordinal (ordinals shift on delete).
         if (m_history.takes().size() > 0 && m_history.currentIndex() >= 0)
-            name = tr("Take %1/%2 (cache)").arg(m_history.currentIndex() + 1).arg(m_history.takes().size());
+            name = tr("%1 (cache)").arg(QFileInfo(m_tempPath).fileName());
         else
             name = tr("Unexported take");
     } else {
