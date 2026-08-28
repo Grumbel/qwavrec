@@ -29,6 +29,17 @@ QVector<float> peaks(const QByteArray &pcm, const QAudioFormat &format, int targ
 bool peakNormalizeInt16(QByteArray &pcm);
 
 /**
+ * Intensity-graded waveform image (oscilloscope-style density).
+ * Columns = time (left→right), rows = amplitude (−1 at bottom, +1 at top).
+ * Each column is a vertical histogram of samples in that time bin; counts are
+ * log-scaled and mapped to a phosphor green ramp so sub-pixel activity is visible.
+ * @param scale  Multiplier applied to samples before binning (for auto-scale).
+ * Empty image on failure.
+ */
+QImage waveformDensity(const QByteArray &pcm, const QAudioFormat &format,
+                       int timeBins = 800, int ampBins = 256, float scale = 1.f);
+
+/**
  * Offline magnitude spectrogram (time × frequency), for display only.
  * Columns = time (left→right), rows = frequency (low at bottom).
  * Uses an in-tree real FFT (no extra dependency). Empty image on failure.

@@ -31,6 +31,15 @@ void WaveformWidget::setPeaks(const QVector<float> &peaks)
     update();
 }
 
+void WaveformWidget::setWaveformDensity(const QImage &image)
+{
+    if (m_waveDensity == image)
+        return;
+    m_waveDensity = image;
+    invalidateBodyCache();
+    update();
+}
+
 void WaveformWidget::setSpectrogram(const QImage &image)
 {
     m_spectrogram = image;
@@ -50,6 +59,7 @@ void WaveformWidget::setDisplayMode(DisplayMode mode)
 void WaveformWidget::clear()
 {
     m_peaks.clear();
+    m_waveDensity = QImage();
     m_spectrogram = QImage();
     m_playbackPos = 0.0;
     clearSelection();
@@ -87,6 +97,8 @@ void WaveformWidget::ensureBodyCache()
     const bool useSpec = (m_mode == DisplayMode::Spectrogram && !m_spectrogram.isNull());
     if (useSpec) {
         paintSpectrogram(p, inner);
+    } else if (!m_waveDensity.isNull()) {
+        paintWaveform(p, inner);
     } else if (!m_peaks.isEmpty()) {
         paintWaveform(p, inner);
     } else {
@@ -171,7 +183,7 @@ void WaveformWidget::setHover(Hit h)
 
 void WaveformWidget::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && (!m_peaks.isEmpty() || !m_spectrogram.isNull())) {
+    if (event->button() == Qt::LeftButton && (!m_peaks.isEmpty() || !m_waveDensity.isNull() || !m_spectrogram.isNull())) {
         const qreal x = event->position().x();
         const qreal p = posFromX(x);
         const Hit hit = hitTest(x);
@@ -199,7 +211,7 @@ void WaveformWidget::mouseMoveEvent(QMouseEvent *event)
     const qreal p = posFromX(x);
 
     if (m_drag == Drag::None) {
-        if (!m_peaks.isEmpty() || !m_spectrogram.isNull())
+        if (!m_peaks.isEmpty() || !m_waveDensity.isNull() || !m_spectrogram.isNull())
             setHover(hitTest(x));
         QWidget::mouseMoveEvent(event);
         return;
@@ -300,6 +312,17 @@ void WaveformWidget::paintEvent(QPaintEvent *)
 
 void WaveformWidget::paintWaveform(QPainter &p, const QRect &r)
 {
+    // Prefer intensity-graded density image (oscilloscope-style) when available.
+    if (!m_waveDensity.isNull()) {
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        p.drawImage(r, m_waveDensity);
+        // Zero line for orientation
+        const qreal mid = r.center().y();
+        p.setPen(QPen(QColor(20, 50, 30), 1, Qt::DotLine));
+        p.drawLine(r.left(), int(mid), r.right(), int(mid));
+        return;
+    }
+
     const int n = m_peaks.size();
     if (n <= 0 || r.width() <= 0)
         return;

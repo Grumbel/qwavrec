@@ -265,7 +265,101 @@ QRgb magToRgb(float t)
     return qRgb(int(r * 255), int(g * 255), int(b * 255));
 }
 
+QRgb phosphorToRgb(float t)
+{
+    // Oscilloscope phosphor: near-black → dark green → bright green → yellow-white
+    t = qBound(0.f, t, 1.f);
+    float r, g, b;
+    if (t < 0.15f) {
+        const float u = t / 0.15f;
+        r = 0.02f * u;
+        g = 0.08f + 0.25f * u;
+        b = 0.04f * u;
+    } else if (t < 0.45f) {
+        const float u = (t - 0.15f) / 0.30f;
+        r = 0.02f + 0.08f * u;
+        g = 0.33f + 0.47f * u;
+        b = 0.04f + 0.08f * u;
+    } else if (t < 0.75f) {
+        const float u = (t - 0.45f) / 0.30f;
+        r = 0.10f + 0.55f * u;
+        g = 0.80f + 0.15f * u;
+        b = 0.12f + 0.10f * u;
+    } else {
+        const float u = (t - 0.75f) / 0.25f;
+        r = 0.65f + 0.35f * u;
+        g = 0.95f + 0.05f * u;
+        b = 0.22f + 0.55f * u;
+    }
+    return qRgb(int(r * 255), int(g * 255), int(b * 255));
+}
+
 } // namespace
+
+QImage waveformDensity(const QByteArray &pcm, const QAudioFormat &format,
+                       int timeBins, int ampBins, float scale)
+{
+    QImage img;
+    const int bpf = format.bytesPerFrame();
+    if (bpf <= 0 || pcm.isEmpty() || timeBins <= 0 || ampBins < 8)
+        return img;
+
+    const int frames = pcm.size() / bpf;
+    if (frames < 1)
+        return img;
+
+    timeBins = qBound(8, timeBins, 4096);
+    ampBins = qBound(16, ampBins, 512);
+    scale = qMax(0.f, scale);
+
+    // Per-column amplitude histograms (counts)
+    QVector<float> counts(timeBins * ampBins, 0.f);
+    float maxCount = 0.f;
+    const double step = double(frames) / double(timeBins);
+
+    for (int col = 0; col < timeBins; ++col) {
+        const int a = int(col * step);
+        const int b = qMin(int((col + 1) * step), frames);
+        float *colCounts = counts.data() + col * ampBins;
+        for (int f = a; f < b; ++f) {
+            float s = sampleAt(pcm, format, f) * scale;
+            // Map [-1, +1] → [0, ampBins-1]; clamp outliers
+            const float u = (s + 1.f) * 0.5f;
+            int bin = int(u * float(ampBins));
+            if (bin < 0)
+                bin = 0;
+            else if (bin >= ampBins)
+                bin = ampBins - 1;
+            colCounts[bin] += 1.f;
+        }
+        for (int row = 0; row < ampBins; ++row)
+            maxCount = qMax(maxCount, colCounts[row]);
+    }
+
+    if (maxCount < 1.f)
+        maxCount = 1.f;
+
+    // Log-scale so sparse high peaks and dense low-level activity both show
+    const float logMax = std::log1p(maxCount);
+
+    img = QImage(timeBins, ampBins, QImage::Format_RGB32);
+    // Fill near-black background matching widget body
+    img.fill(qRgb(18, 22, 28));
+    for (int col = 0; col < timeBins; ++col) {
+        const float *colCounts = counts.constData() + col * ampBins;
+        for (int row = 0; row < ampBins; ++row) {
+            const float c = colCounts[row];
+            if (c <= 0.f)
+                continue;
+            const float t = std::log1p(c) / logMax;
+            // row 0 = top of image = +1 amplitude; bottom = −1
+            const int imgRow = ampBins - 1 - row;
+            img.setPixel(col, imgRow, phosphorToRgb(t));
+        }
+    }
+    return img;
+}
+
 
 QImage spectrogram(const QByteArray &pcm, const QAudioFormat &format,
                    int timeBins, int fftSize)

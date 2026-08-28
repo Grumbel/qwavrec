@@ -18,6 +18,11 @@ public:
     explicit WaveformWidget(QWidget *parent = nullptr);
 
     void setPeaks(const QVector<float> &peaks);
+    /**
+     * Intensity-graded waveform (time →, amplitude ↑). Empty clears density.
+     * Preferred over setPeaks silhouette when non-null.
+     */
+    void setWaveformDensity(const QImage &image);
     /** Offline spectrogram image (time →, frequency ↑). Empty clears spectrogram. */
     void setSpectrogram(const QImage &image);
     void setDisplayMode(DisplayMode mode);
@@ -72,6 +77,8 @@ private:
 
     DisplayMode m_mode = DisplayMode::Waveform;
     QVector<float> m_peaks;
+    /** Oscilloscope-style density image; used in Waveform mode when non-null. */
+    QImage m_waveDensity;
     QImage m_spectrogram;
     /** Cached body (wave or spectrogram) without selection/playhead. */
     QPixmap m_bodyCache;

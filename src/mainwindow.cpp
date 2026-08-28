@@ -758,10 +758,25 @@ void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &f
         return;
     }
     m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+
+    // Oscilloscope-style density image (sub-pixel activity). Scale matches auto-scale peaks.
+    float densScale = 1.f;
+    if (m_autoScaleWaveform) {
+        float mx = 0.f;
+        for (float v : m_rawPeaks)
+            mx = qMax(mx, v);
+        if (mx > 1e-6f)
+            densScale = 1.f / mx;
+    }
+    const int timeBins = qBound(64, bins, 4096);
+    // Amplitude bins ≈ widget height for 1:1 vertical detail when painted.
+    const int ampBins = qBound(64, m_waveform ? m_waveform->height() : 128, 512);
+    m_waveform->setWaveformDensity(WavFile::waveformDensity(pcm, fmt, timeBins, ampBins, densScale));
+
     if (m_spectrogramMode && !pcm.isEmpty()) {
         // Match horizontal resolution to the drawable width for detail when maximized.
-        const int timeBins = qBound(64, peakBinCount(), 2048);
-        m_waveform->setSpectrogram(WavFile::spectrogram(pcm, fmt, timeBins, 256));
+        const int specBins = qBound(64, peakBinCount(), 2048);
+        m_waveform->setSpectrogram(WavFile::spectrogram(pcm, fmt, specBins, 256));
     } else {
         m_waveform->setSpectrogram(QImage());
     }
@@ -1004,7 +1019,8 @@ void MainWindow::onRecord()
     if (!m_insertRecord) {
         m_waveform->clear();
     } else {
-        // Keep peaks for insert preview; drop stale spectrogram so live falls back to waveform paint.
+        // Keep peaks for insert preview; drop stale density/spectrogram so live falls back to peak paint.
+        m_waveform->setWaveformDensity(QImage());
         m_waveform->setSpectrogram(QImage());
     }
     m_recordTimer.restart();
@@ -1550,7 +1566,10 @@ void MainWindow::onLoopToggled(bool on)
 void MainWindow::onAutoScaleWaveformToggled(bool on)
 {
     m_autoScaleWaveform = on;
-    if (!m_rawPeaks.isEmpty())
+    // Rebuild density with the new scale factor when document PCM is available.
+    if (m_player && !m_player->pcm().isEmpty() && m_state != AppState::Recording)
+        setWaveformFromPcm(m_player->pcm(), m_player->format());
+    else if (!m_rawPeaks.isEmpty())
         m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
     if (!m_restoringSettings)
         saveSettings();
