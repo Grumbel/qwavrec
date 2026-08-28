@@ -147,6 +147,251 @@ PulseDevices::Lists PulseDevices::query()
     return lists;
 }
 
+// ─── Device watcher (subscription, worker thread) ─────────────────────
+
+namespace {
+
+struct WatcherEnumCtx {
+    PulseDeviceLists *lists = nullptr;
+    int phase = 0; // 0=server pending, 1=sources, 2=sinks, 3=done
+};
+
+void watcherServerInfoCb(pa_context *, const pa_server_info *i, void *userdata)
+{
+    auto *ctx = static_cast<WatcherEnumCtx *>(userdata);
+    if (i) {
+        if (i->default_source_name)
+            ctx->lists->defaultSource = QString::fromUtf8(i->default_source_name);
+        if (i->default_sink_name)
+            ctx->lists->defaultSink = QString::fromUtf8(i->default_sink_name);
+    }
+    ctx->phase = 1;
+}
+
+void watcherSourceInfoCb(pa_context *, const pa_source_info *i, int eol, void *userdata)
+{
+    auto *ctx = static_cast<WatcherEnumCtx *>(userdata);
+    if (eol) {
+        ctx->phase = 2;
+        return;
+    }
+    if (!i)
+        return;
+    PulseDevice d;
+    d.name = QString::fromUtf8(i->name);
+    d.description = QString::fromUtf8(i->description);
+    d.isMonitor = (i->monitor_of_sink != PA_INVALID_INDEX);
+    d.isDefault = (d.name == ctx->lists->defaultSource);
+    if (d.isMonitor && !d.description.contains(QStringLiteral("Monitor"), Qt::CaseInsensitive))
+        d.description = QStringLiteral("Monitor of %1").arg(d.description);
+    ctx->lists->sources.append(d);
+}
+
+void watcherSinkInfoCb(pa_context *, const pa_sink_info *i, int eol, void *userdata)
+{
+    auto *ctx = static_cast<WatcherEnumCtx *>(userdata);
+    if (eol) {
+        ctx->phase = 3;
+        return;
+    }
+    if (!i)
+        return;
+    PulseDevice d;
+    d.name = QString::fromUtf8(i->name);
+    d.description = QString::fromUtf8(i->description);
+    d.isDefault = (d.name == ctx->lists->defaultSink);
+    ctx->lists->sinks.append(d);
+}
+
+struct WatcherThreadCtx {
+    PulseDeviceWatcher *self = nullptr;
+    pa_mainloop *ml = nullptr;
+};
+
+void watcherContextStateCb(pa_context *c, void *userdata)
+{
+    auto *w = static_cast<WatcherThreadCtx *>(userdata);
+    const pa_context_state_t st = pa_context_get_state(c);
+    if (st == PA_CONTEXT_READY) {
+        pa_operation *op = pa_context_subscribe(
+            c,
+            static_cast<pa_subscription_mask_t>(
+                PA_SUBSCRIPTION_MASK_SOURCE
+                | PA_SUBSCRIPTION_MASK_SINK
+                | PA_SUBSCRIPTION_MASK_SERVER),
+            nullptr, nullptr);
+        if (op)
+            pa_operation_unref(op);
+        w->self->requestEnumerate();
+    } else if (st == PA_CONTEXT_FAILED || st == PA_CONTEXT_TERMINATED) {
+        if (w->ml)
+            pa_mainloop_quit(w->ml, 1);
+    }
+}
+
+void watcherSubscribeCb(pa_context *, pa_subscription_event_type_t t, uint32_t, void *userdata)
+{
+    auto *w = static_cast<WatcherThreadCtx *>(userdata);
+    const auto facility = static_cast<pa_subscription_event_type_t>(
+        t & PA_SUBSCRIPTION_EVENT_FACILITY_MASK);
+    if (facility == PA_SUBSCRIPTION_EVENT_SOURCE
+        || facility == PA_SUBSCRIPTION_EVENT_SINK
+        || facility == PA_SUBSCRIPTION_EVENT_SERVER) {
+        w->self->requestEnumerate();
+    }
+}
+
+} // namespace
+
+PulseDeviceWatcher::PulseDeviceWatcher(QObject *parent)
+    : QObject(parent)
+{
+}
+
+PulseDeviceWatcher::~PulseDeviceWatcher()
+{
+    stop();
+}
+
+void PulseDeviceWatcher::start()
+{
+    if (m_started.exchange(true))
+        return;
+    m_stop = false;
+    m_thread = QThread::create([this]() { threadMain(); });
+    m_thread->setObjectName(QStringLiteral("PulseDeviceWatcher"));
+    // Do not parent to this — stop() waits then the thread object is deleted.
+    connect(m_thread, &QThread::finished, m_thread, &QObject::deleteLater);
+    m_thread->start();
+}
+
+void PulseDeviceWatcher::stop()
+{
+    m_stop = true;
+    {
+        QMutexLocker lock(&m_loopMutex);
+        if (m_ml)
+            pa_mainloop_quit(static_cast<pa_mainloop *>(m_ml), 0);
+    }
+    if (m_thread) {
+        m_thread->wait(5000);
+        m_thread = nullptr;
+    }
+    m_started = false;
+    {
+        QMutexLocker lock(&m_loopMutex);
+        m_ml = nullptr;
+    }
+}
+
+PulseDeviceLists PulseDeviceWatcher::snapshot() const
+{
+    QMutexLocker lock(&m_cacheMutex);
+    return m_cache;
+}
+
+void PulseDeviceWatcher::requestEnumerate()
+{
+    // Called from PA callbacks on the worker thread, or indirectly after READY.
+    m_dirty = true;
+}
+
+void PulseDeviceWatcher::threadMain()
+{
+    pa_mainloop *ml = pa_mainloop_new();
+    if (!ml)
+        return;
+    {
+        QMutexLocker lock(&m_loopMutex);
+        m_ml = ml;
+    }
+
+    pa_mainloop_api *api = pa_mainloop_get_api(ml);
+    pa_context *ctx = pa_context_new(api, "qwavrec-devices");
+    if (!ctx) {
+        QMutexLocker lock(&m_loopMutex);
+        m_ml = nullptr;
+        pa_mainloop_free(ml);
+        return;
+    }
+
+    WatcherThreadCtx wctx;
+    wctx.self = this;
+    wctx.ml = ml;
+
+    pa_context_set_state_callback(ctx, watcherContextStateCb, &wctx);
+    pa_context_set_subscribe_callback(ctx, watcherSubscribeCb, &wctx);
+
+    if (pa_context_connect(ctx, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
+        pa_context_unref(ctx);
+        QMutexLocker lock(&m_loopMutex);
+        m_ml = nullptr;
+        pa_mainloop_free(ml);
+        return;
+    }
+
+    while (!m_stop.load()) {
+        if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
+            break;
+
+        if (!m_dirty.load() || m_enumerating.load())
+            continue;
+        if (pa_context_get_state(ctx) != PA_CONTEXT_READY)
+            continue;
+
+        m_enumerating = true;
+        m_dirty = false;
+
+        PulseDeviceLists lists;
+        WatcherEnumCtx ectx;
+        ectx.lists = &lists;
+
+        pa_operation *op = pa_context_get_server_info(ctx, watcherServerInfoCb, &ectx);
+        if (op) {
+            while (ectx.phase < 1 && !m_stop.load()) {
+                if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
+                    break;
+            }
+            pa_operation_unref(op);
+        }
+        op = pa_context_get_source_info_list(ctx, watcherSourceInfoCb, &ectx);
+        if (op) {
+            while (ectx.phase < 2 && !m_stop.load()) {
+                if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
+                    break;
+            }
+            pa_operation_unref(op);
+        }
+        op = pa_context_get_sink_info_list(ctx, watcherSinkInfoCb, &ectx);
+        if (op) {
+            while (ectx.phase < 3 && !m_stop.load()) {
+                if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
+                    break;
+            }
+            pa_operation_unref(op);
+        }
+
+        if (!m_stop.load() && ectx.phase >= 3) {
+            lists.ok = true;
+            {
+                QMutexLocker lock(&m_cacheMutex);
+                m_cache = lists;
+            }
+            // Queued to GUI receivers by default when they live on another thread.
+            emit devicesChanged();
+        }
+        m_enumerating = false;
+    }
+
+    pa_context_disconnect(ctx);
+    pa_context_unref(ctx);
+    {
+        QMutexLocker lock(&m_loopMutex);
+        m_ml = nullptr;
+    }
+    pa_mainloop_free(ml);
+}
+
 // ─── Capture ──────────────────────────────────────────────────────────
 
 PulseCapture::PulseCapture(QObject *parent)

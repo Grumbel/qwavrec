@@ -9,6 +9,7 @@
 #include <QByteArray>
 #include <QAudioFormat>
 #include <QMutex>
+#include <QThread>
 #include <QVector>
 #include <atomic>
 
@@ -20,26 +21,78 @@ struct PulseDevice {
 };
 
 /**
- * Enumerate sources (including monitors) and sinks.
- * Uses a single PulseAudio connection; safe to call from the GUI thread
- * but prefer not to call it in a tight loop.
+ * Snapshot of Pulse sources/sinks (including monitor sources).
+ */
+struct PulseDeviceLists {
+    QVector<PulseDevice> sources;
+    QVector<PulseDevice> sinks;
+    QString defaultSource;
+    QString defaultSink;
+    bool ok = false;
+};
+
+/**
+ * One-shot enumeration (single pa_context connect/disconnect).
+ * Prefer PulseDeviceWatcher for ongoing UI; use this only for rare
+ * synchronous needs or as a fallback before the watcher is ready.
  */
 class PulseDevices
 {
 public:
-    struct Lists {
-        QVector<PulseDevice> sources;
-        QVector<PulseDevice> sinks;
-        QString defaultSource;
-        QString defaultSink;
-        bool ok = false;
-    };
+    using Lists = PulseDeviceLists;
 
     /** One connection: server info + source list + sink list. */
     static Lists query();
 
     static QVector<PulseDevice> sources() { return query().sources; }
     static QVector<PulseDevice> sinks() { return query().sinks; }
+};
+
+/**
+ * Long-lived Pulse context on a worker thread: subscribe to source/sink/server
+ * changes and re-enumerate. Emits devicesChanged() (queued) when the cache
+ * updates. Never call Pulse I/O from the GUI thread via this class.
+ */
+class PulseDeviceWatcher : public QObject
+{
+    Q_OBJECT
+public:
+    explicit PulseDeviceWatcher(QObject *parent = nullptr);
+    ~PulseDeviceWatcher() override;
+
+    /** Start the background mainloop (idempotent). */
+    void start();
+    /** Quit mainloop and join the worker. */
+    void stop();
+
+    /** Thread-safe copy of the last successful enumeration. */
+    PulseDeviceLists snapshot() const;
+
+    /**
+     * Mark lists dirty so the worker re-enumerates.
+     * Called from Pulse callbacks on the worker thread only.
+     */
+    void requestEnumerate();
+
+signals:
+    /** Fired after the cached lists were replaced (use Qt::QueuedConnection). */
+    void devicesChanged();
+
+private:
+    void threadMain();
+
+    mutable QMutex m_cacheMutex;
+    PulseDeviceLists m_cache;
+
+    std::atomic<bool> m_stop{false};
+    std::atomic<bool> m_started{false};
+    /** Set by subscribe callback; cleared when an enum pass finishes. */
+    std::atomic<bool> m_dirty{false};
+    std::atomic<bool> m_enumerating{false};
+
+    QMutex m_loopMutex;
+    void *m_ml = nullptr; // pa_mainloop*; worker + stop() only
+    QThread *m_thread = nullptr;
 };
 
 /**
