@@ -221,7 +221,7 @@ if that need returns without turning the app into an editor.
 - `pa_simple` cannot cancel a blocked read; stop is cooperative after the
   current fragment (~20 ms with our `fragsize`).  
 - Full-file PCM in memory limits practical take length.  
-- No hotplug subscription yet (manual refresh / restart).  
+- Device lists refresh every ~2.5s (no Pulse subscription yet); full event-driven hotplug remains future work.  
 - Device list still runs synchronously on the GUI thread (one connection,
   but can hitch briefly on a slow server) — a future improvement is a
   worker + cached list.  
