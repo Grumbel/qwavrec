@@ -956,9 +956,12 @@ void MainWindow::finishRecordingStop()
     }
 
     setAppState(AppState::Ready);
-    m_monitoring = m_capture && m_capture->isRunning();
-    if (!m_monitoring)
-        m_monitorSourceName.clear();
+    // Always re-arm the input meter. Leaving the stream "as is" is fragile:
+    // isRunning() can already be false (read error, prior stopMonitoring from
+    // Play, session race), and we used to only copy that flag — so the meter
+    // stayed dead after a take. startMonitoring() is a no-op if the same
+    // source is already open.
+    startMonitoring();
 
     if (m_recordPcm.isEmpty()) {
         if (!m_captureTempPath.isEmpty())
