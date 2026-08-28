@@ -24,8 +24,8 @@ No separate Stop button — the Record and Play buttons act as toggles.
 
 ## Features
 
-* Device selectors with hot-plug support
-* LED-style level meters and a simple scrolling waveform
+* Device selectors with PulseAudio hot-plug (event-driven)
+* LED-style level meters and waveform / spectrogram view
 * Old-school colorful SVG icon
 * Menu bar + toolbar
 

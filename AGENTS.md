@@ -83,6 +83,8 @@ before the watcher has published its first snapshot.
 2. On events, set dirty and re-enumerate on that thread  
 3. Publish a mutex-protected snapshot; `emit devicesChanged()`  
 4. GUI debounces (~100 ms) and rebuilds combos from `snapshot()`  
+5. On server disconnect/failure, reconnect with exponential backoff and
+   re-subscribe (do not leave the watcher dead after a PipeWire restart)
 
 Never run the watcher mainloop or blocking `pa_mainloop_iterate` on the
 GUI thread.

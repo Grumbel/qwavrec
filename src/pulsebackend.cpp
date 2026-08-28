@@ -298,98 +298,134 @@ void PulseDeviceWatcher::requestEnumerate()
 
 void PulseDeviceWatcher::threadMain()
 {
-    pa_mainloop *ml = pa_mainloop_new();
-    if (!ml)
-        return;
-    {
-        QMutexLocker lock(&m_loopMutex);
-        m_ml = ml;
-    }
-
-    pa_mainloop_api *api = pa_mainloop_get_api(ml);
-    pa_context *ctx = pa_context_new(api, "qwavrec-devices");
-    if (!ctx) {
-        QMutexLocker lock(&m_loopMutex);
-        m_ml = nullptr;
-        pa_mainloop_free(ml);
-        return;
-    }
-
-    WatcherThreadCtx wctx;
-    wctx.self = this;
-    wctx.ml = ml;
-
-    pa_context_set_state_callback(ctx, watcherContextStateCb, &wctx);
-    pa_context_set_subscribe_callback(ctx, watcherSubscribeCb, &wctx);
-
-    if (pa_context_connect(ctx, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
-        pa_context_unref(ctx);
-        QMutexLocker lock(&m_loopMutex);
-        m_ml = nullptr;
-        pa_mainloop_free(ml);
-        return;
-    }
+    // Reconnect with backoff if the server goes away (PipeWire/Pulse restart).
+    int backoffMs = 500;
 
     while (!m_stop.load()) {
-        if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
-            break;
-
-        if (!m_dirty.load() || m_enumerating.load())
+        pa_mainloop *ml = pa_mainloop_new();
+        if (!ml) {
+            QThread::msleep(static_cast<unsigned long>(backoffMs));
+            backoffMs = qMin(backoffMs * 2, 8000);
             continue;
-        if (pa_context_get_state(ctx) != PA_CONTEXT_READY)
-            continue;
-
-        m_enumerating = true;
-        m_dirty = false;
-
-        PulseDeviceLists lists;
-        WatcherEnumCtx ectx;
-        ectx.lists = &lists;
-
-        pa_operation *op = pa_context_get_server_info(ctx, watcherServerInfoCb, &ectx);
-        if (op) {
-            while (ectx.phase < 1 && !m_stop.load()) {
-                if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
-                    break;
-            }
-            pa_operation_unref(op);
         }
-        op = pa_context_get_source_info_list(ctx, watcherSourceInfoCb, &ectx);
-        if (op) {
-            while (ectx.phase < 2 && !m_stop.load()) {
-                if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
-                    break;
-            }
-            pa_operation_unref(op);
-        }
-        op = pa_context_get_sink_info_list(ctx, watcherSinkInfoCb, &ectx);
-        if (op) {
-            while (ectx.phase < 3 && !m_stop.load()) {
-                if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
-                    break;
-            }
-            pa_operation_unref(op);
+        {
+            QMutexLocker lock(&m_loopMutex);
+            m_ml = ml;
         }
 
-        if (!m_stop.load() && ectx.phase >= 3) {
-            lists.ok = true;
+        pa_mainloop_api *api = pa_mainloop_get_api(ml);
+        pa_context *ctx = pa_context_new(api, "qwavrec-devices");
+        if (!ctx) {
             {
-                QMutexLocker lock(&m_cacheMutex);
-                m_cache = lists;
+                QMutexLocker lock(&m_loopMutex);
+                m_ml = nullptr;
             }
-            // Queued to GUI receivers by default when they live on another thread.
-            emit devicesChanged();
+            pa_mainloop_free(ml);
+            QThread::msleep(static_cast<unsigned long>(backoffMs));
+            backoffMs = qMin(backoffMs * 2, 8000);
+            continue;
         }
-        m_enumerating = false;
-    }
 
-    pa_context_disconnect(ctx);
-    pa_context_unref(ctx);
-    {
-        QMutexLocker lock(&m_loopMutex);
-        m_ml = nullptr;
+        WatcherThreadCtx wctx;
+        wctx.self = this;
+        wctx.ml = ml;
+
+        pa_context_set_state_callback(ctx, watcherContextStateCb, &wctx);
+        pa_context_set_subscribe_callback(ctx, watcherSubscribeCb, &wctx);
+
+        if (pa_context_connect(ctx, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
+            pa_context_unref(ctx);
+            {
+                QMutexLocker lock(&m_loopMutex);
+                m_ml = nullptr;
+            }
+            pa_mainloop_free(ml);
+            QThread::msleep(static_cast<unsigned long>(backoffMs));
+            backoffMs = qMin(backoffMs * 2, 8000);
+            continue;
+        }
+
+        bool sessionFailed = false;
+        while (!m_stop.load()) {
+            if (pa_mainloop_iterate(ml, 1, nullptr) < 0) {
+                sessionFailed = true;
+                break;
+            }
+
+            const pa_context_state_t st = pa_context_get_state(ctx);
+            if (st == PA_CONTEXT_FAILED || st == PA_CONTEXT_TERMINATED) {
+                sessionFailed = true;
+                break;
+            }
+            if (st != PA_CONTEXT_READY)
+                continue;
+
+            // Connected successfully — reset backoff for the next disconnect.
+            backoffMs = 500;
+
+            if (!m_dirty.load() || m_enumerating.load())
+                continue;
+
+            m_enumerating = true;
+            m_dirty = false;
+
+            PulseDeviceLists lists;
+            WatcherEnumCtx ectx;
+            ectx.lists = &lists;
+
+            pa_operation *op = pa_context_get_server_info(ctx, watcherServerInfoCb, &ectx);
+            if (op) {
+                while (ectx.phase < 1 && !m_stop.load()) {
+                    if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
+                        break;
+                }
+                pa_operation_unref(op);
+            }
+            op = pa_context_get_source_info_list(ctx, watcherSourceInfoCb, &ectx);
+            if (op) {
+                while (ectx.phase < 2 && !m_stop.load()) {
+                    if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
+                        break;
+                }
+                pa_operation_unref(op);
+            }
+            op = pa_context_get_sink_info_list(ctx, watcherSinkInfoCb, &ectx);
+            if (op) {
+                while (ectx.phase < 3 && !m_stop.load()) {
+                    if (pa_mainloop_iterate(ml, 1, nullptr) < 0)
+                        break;
+                }
+                pa_operation_unref(op);
+            }
+
+            if (!m_stop.load() && ectx.phase >= 3) {
+                lists.ok = true;
+                {
+                    QMutexLocker lock(&m_cacheMutex);
+                    m_cache = lists;
+                }
+                emit devicesChanged();
+            }
+            m_enumerating = false;
+        }
+
+        pa_context_disconnect(ctx);
+        pa_context_unref(ctx);
+        {
+            QMutexLocker lock(&m_loopMutex);
+            m_ml = nullptr;
+        }
+        pa_mainloop_free(ml);
+
+        if (m_stop.load())
+            break;
+        if (sessionFailed) {
+            // Force a fresh enum after the next successful connect.
+            m_dirty = true;
+            QThread::msleep(static_cast<unsigned long>(backoffMs));
+            backoffMs = qMin(backoffMs * 2, 8000);
+        }
     }
-    pa_mainloop_free(ml);
 }
 
 // ─── Capture ──────────────────────────────────────────────────────────
