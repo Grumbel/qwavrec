@@ -79,6 +79,7 @@ private slots:
     void onSeek(int value);
     void onWaveformSeek(qreal pos);
     void onSelectionChanged(qreal start, qreal end);
+    void onWaveformWidthChanged(int width);
 
     void onCaptureError(const QString &msg);
     void onMeterTick();
@@ -114,6 +115,8 @@ private:
     void markModified();
     void loadDocumentForPlayback(const QString &path);
     void setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt);
+    int peakBinCount() const;
+    void rebuildPeaksFromDocument();
     void applyDisplayMode();
     QVector<float> normalizedPeaks(const QVector<float> &raw) const;
 
@@ -214,6 +217,7 @@ private:
     QTimer *m_meterTimer = nullptr;
     /** Periodic re-query of Pulse sources/sinks so hot-plugged devices appear. */
     QTimer *m_deviceRefreshTimer = nullptr;
+    QTimer *m_waveformResizeTimer = nullptr;
 };
 
 #endif

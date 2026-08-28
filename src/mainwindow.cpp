@@ -111,6 +111,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_waveform, &WaveformWidget::seekRequested, this, &MainWindow::onWaveformSeek);
     connect(m_waveform, &WaveformWidget::selectionChanged, this, &MainWindow::onSelectionChanged);
     connect(m_waveform, &WaveformWidget::contextMenuRequested, this, &MainWindow::onWaveformContextMenu);
+    connect(m_waveform, &WaveformWidget::contentWidthChanged, this, &MainWindow::onWaveformWidthChanged);
     connect(m_inputVolumeSlider, &QSlider::valueChanged, this, &MainWindow::onInputVolumeChanged);
     connect(m_outputVolumeSlider, &QSlider::valueChanged, this, &MainWindow::onOutputVolumeChanged);
 
@@ -654,19 +655,54 @@ QVector<float> MainWindow::normalizedPeaks(const QVector<float> &raw) const
 
 void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt)
 {
-    m_rawPeaks = WavFile::peaks(pcm, fmt, 400);
+    const int bins = peakBinCount();
+    m_rawPeaks = WavFile::peaks(pcm, fmt, bins);
     if (m_rawPeaks.isEmpty()) {
         m_waveform->clear();
         return;
     }
     m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
-    if (m_spectrogramMode && !pcm.isEmpty())
-        m_waveform->setSpectrogram(WavFile::spectrogram(pcm, fmt));
-    else
+    if (m_spectrogramMode && !pcm.isEmpty()) {
+        // Match horizontal resolution to the drawable width for detail when maximized.
+        const int timeBins = qBound(64, peakBinCount(), 2048);
+        m_waveform->setSpectrogram(WavFile::spectrogram(pcm, fmt, timeBins, 256));
+    } else {
         m_waveform->setSpectrogram(QImage());
+    }
     m_waveform->setDisplayMode(m_spectrogramMode
         ? WaveformWidget::DisplayMode::Spectrogram
         : WaveformWidget::DisplayMode::Waveform);
+}
+
+int MainWindow::peakBinCount() const
+{
+    // About one peak column per pixel; clamp so tiny/huge windows stay sane.
+    const int w = m_waveform ? m_waveform->contentWidth() : 400;
+    return qBound(64, w, 4096);
+}
+
+void MainWindow::rebuildPeaksFromDocument()
+{
+    if (m_state == AppState::Recording) {
+        // Live path recomputes on the next meter tick with current width.
+        return;
+    }
+    if (m_player && !m_player->pcm().isEmpty())
+        setWaveformFromPcm(m_player->pcm(), m_player->format());
+}
+
+void MainWindow::onWaveformWidthChanged(int width)
+{
+    Q_UNUSED(width);
+    // Debounce: maximize/tile animations fire many resizes; full-PCM peak
+    // rebuild is O(n) and should not run on every intermediate width.
+    if (!m_waveformResizeTimer) {
+        m_waveformResizeTimer = new QTimer(this);
+        m_waveformResizeTimer->setSingleShot(true);
+        m_waveformResizeTimer->setInterval(50);
+        connect(m_waveformResizeTimer, &QTimer::timeout, this, &MainWindow::rebuildPeaksFromDocument);
+    }
+    m_waveformResizeTimer->start();
 }
 
 void MainWindow::loadDocumentForPlayback(const QString &path)
@@ -815,7 +851,7 @@ void MainWindow::onRecord()
         m_insertBaseDurationMs = m_player->duration();
         m_insertBasePeaks = m_rawPeaks;
         if (m_insertBasePeaks.isEmpty())
-            m_insertBasePeaks = WavFile::peaks(m_insertBasePcm, m_insertBaseFormat, 400);
+            m_insertBasePeaks = WavFile::peaks(m_insertBasePcm, m_insertBaseFormat, peakBinCount());
         m_insertAtMs = m_player->position();
         if (m_seekSlider && m_seekSlider->value() > m_insertAtMs)
             m_insertAtMs = m_seekSlider->value();
@@ -1441,7 +1477,8 @@ void MainWindow::applyDisplayMode()
         return;
     // Build spectrogram from the current document PCM when available.
     if (m_player && !m_player->pcm().isEmpty()) {
-        m_waveform->setSpectrogram(WavFile::spectrogram(m_player->pcm(), m_player->format()));
+        m_waveform->setSpectrogram(WavFile::spectrogram(
+            m_player->pcm(), m_player->format(), qBound(64, peakBinCount(), 2048), 256));
         return;
     }
     if (!m_recordPcm.isEmpty() && m_state == AppState::Recording) {
@@ -1449,7 +1486,8 @@ void MainWindow::applyDisplayMode()
         liveFmt.setSampleFormat(QAudioFormat::Int16);
         liveFmt.setSampleRate(48000);
         liveFmt.setChannelCount(1);
-        m_waveform->setSpectrogram(WavFile::spectrogram(m_recordPcm, liveFmt));
+        m_waveform->setSpectrogram(WavFile::spectrogram(
+            m_recordPcm, liveFmt, qBound(64, peakBinCount(), 2048), 256));
     }
 }
 
@@ -1803,7 +1841,7 @@ void MainWindow::onCaptureError(const QString &msg)
 void MainWindow::updateInsertPreviewWaveform()
 {
     // Composite: left of insert point | growing capture | right of insert point
-    const int targetBins = 400;
+    const int targetBins = peakBinCount();
     const qint64 liveMs = qMax(qint64(1), m_recordTimer.elapsed());
     const qint64 baseMs = qMax(qint64(1), m_insertBaseDurationMs);
     const qint64 totalMs = baseMs + liveMs;
@@ -1893,18 +1931,17 @@ void MainWindow::onMeterTick()
         if (!pcm.isEmpty()) {
             m_recordPcm.append(pcm);
             m_wavWriter.write(pcm.constData(), pcm.size());
-            // Same peak algorithm as load/open (400 bins over full PCM) so
-            // live detail matches the waveform after stop/reload. Recompute
-            // every tick is fine at 20 Hz for typical take lengths.
+            // Peak bins track widget width so maximized windows gain detail
+            // (same as setWaveformFromPcm). Full-PCM scan is O(n) either way.
             QAudioFormat liveFmt;
             liveFmt.setSampleFormat(QAudioFormat::Int16);
             liveFmt.setSampleRate(48000);
             liveFmt.setChannelCount(1);
             if (m_insertRecord && !m_insertBasePeaks.isEmpty()) {
-                m_liveRecordPeaks = WavFile::peaks(m_recordPcm, liveFmt, 200);
+                m_liveRecordPeaks = WavFile::peaks(m_recordPcm, liveFmt, qMax(32, peakBinCount() / 2));
                 updateInsertPreviewWaveform();
             } else {
-                m_rawPeaks = WavFile::peaks(m_recordPcm, liveFmt, 400);
+                m_rawPeaks = WavFile::peaks(m_recordPcm, liveFmt, peakBinCount());
                 m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
             }
         }
