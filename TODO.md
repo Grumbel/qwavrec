@@ -134,11 +134,11 @@ Compared to typical GNOME/KDE/Qt desktop guidelines and common media apps:
   Float/other formats fail silently-ish (`return false`). Should
   message the user.
 
-- [ ] **Capture format lock / stereo**  
-  Today the record path hard-codes 48 kHz **mono** Int16 in several
-  places (`MainWindow` liveFmt / WavWriter open, `PulseCapture::start`
-  default `channels = 1`). Playback already follows the file’s channel
-  count. See **Stereo capture** below for the intended minimal plan.
+- [x] **Capture format lock / stereo**  
+  Capture mode is Mono/Stereo (View → Stereo Capture / toolbar). Channel
+  count is plumbed through PulseCapture, WavWriter, live peaks/density.
+  Playback already follows the file’s channel count. See **Stereo capture**
+  below for residual polish (status tip, >2 channel policy).
 
 - [x] **Input meter dies while playing** (fixed: keep monitoring during playback)  
   `onPlay` used to call `stopMonitoring()`, so the input level bar
@@ -319,18 +319,17 @@ message, or record as-is and show a single combined peak meter / waveform
    files play to a stereo sink without silent downmix surprises (Pulse
    remaps if sink is mono).
 
-**Backend checklist (when implementing)**
+**Backend checklist**
 
-- [ ] Plumb `channels` from UI mode into `PulseCapture::start`, WavWriter,
-      liveFmt, insert-format match, peak/density helpers (use `bytesPerFrame`
-      / interleaved walk — already partly generic).
-- [ ] Enumerate source channel count (extend `PulseDevice` with
-      `channelCount` from `pa_source_info`) so the default mode is honest.
-- [ ] Peak meter: `currentPeak()` → L/R peaks (or max + optional split).
-- [ ] `WavFile::peaks` / `waveformDensity`: walk all channels in a frame
-      (today only the first sample of each frame is used).
-- [ ] Settings key for preferred mode (`capture/channels` = 1|2).
-- [ ] Status tip when forcing mono on a stereo monitor: “Downmixing to mono”.
+- [x] Plumb `channels` from UI mode into `PulseCapture::start`, WavWriter,
+      liveFmt, insert-format match, peak/density helpers.
+- [x] Enumerate source channel count (`PulseDevice::channelCount` from
+      `pa_source_info` / sink sample spec).
+- [x] Peak meter: L/R peaks + dual LevelMeter when stereo.
+- [x] `WavFile::peaks` / `waveformDensity`: walk all channels in a frame.
+- [x] Settings key `capture/stereo` (prefer stereo when source ≥2 channels).
+- [ ] Status tip when forcing mono on a stereo monitor: “Downmixing to mono”
+      (optional polish).
 
 **Explicitly out of scope for stereo v1**
 

@@ -121,6 +121,11 @@ private:
     void loadDocumentForPlayback(const QString &path);
     void setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt);
     int peakBinCount() const;
+    /** 1 or 2: preferred mode clamped to the selected source capability. */
+    int captureChannelCount() const;
+    int currentSourceChannelCount() const;
+    QAudioFormat captureFormat() const;
+    void onStereoToggled(bool on);
     void rebuildPeaksFromDocument();
     void applyDisplayMode();
     QVector<float> normalizedPeaks(const QVector<float> &raw) const;
@@ -152,6 +157,7 @@ private:
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
     QAction *m_autoScaleAction = nullptr;
+    QAction *m_stereoAction = nullptr;
     QAction *m_waveformViewAction = nullptr;
     QAction *m_spectrogramAction = nullptr;
     QActionGroup *m_viewModeGroup = nullptr;
@@ -217,6 +223,10 @@ private:
     QString m_pendingOutputName;
     bool m_restoringSettings = false;
     bool m_autoScaleWaveform = false;
+    /** Prefer stereo capture when the source has ≥2 channels. */
+    bool m_preferStereo = true;
+    /** Channel count used for the current/last recording session. */
+    int m_recordChannelCount = 1;
     bool m_spectrogramMode = false;
     /** Skip Stopped→Ready side effects while switching takes under playback. */
     bool m_resumePlayAfterTakeLoad = false;

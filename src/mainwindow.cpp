@@ -337,6 +337,13 @@ void MainWindow::createActions()
     m_autoScaleAction->setCheckable(true);
     connect(m_autoScaleAction, &QAction::toggled, this, &MainWindow::onAutoScaleWaveformToggled);
 
+    m_stereoAction = new QAction(tr("&Stereo Capture"), this);
+    m_stereoAction->setStatusTip(tr("Record two channels when the input source supports stereo (e.g. sink monitors)"));
+    m_stereoAction->setCheckable(true);
+    m_stereoAction->setChecked(true);
+    m_stereoAction->setToolTip(tr("Stereo capture"));
+    connect(m_stereoAction, &QAction::toggled, this, &MainWindow::onStereoToggled);
+
     // Exclusive view modes (toolbar + View menu). Qt has no QRadioButton on
     // toolbars; the proper pattern is checkable QActions in a QActionGroup.
     // Prefer freedesktop/theme icons when the icon theme provides them; otherwise
@@ -466,6 +473,7 @@ void MainWindow::createMenus()
     viewMenu->addAction(m_spectrogramAction);
     viewMenu->addSeparator();
     viewMenu->addAction(m_autoScaleAction);
+    viewMenu->addAction(m_stereoAction);
 
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(m_aboutAction);
@@ -493,6 +501,7 @@ void MainWindow::createToolBar()
     // Display mode (exclusive checkable actions ≈ radio buttons)
     tb->addAction(m_waveformViewAction);
     tb->addAction(m_spectrogramAction);
+    tb->addAction(m_stereoAction);
 
     // Push take navigation to the right edge (above the Takes dock)
     auto *spacer = new QWidget;
@@ -637,6 +646,9 @@ void MainWindow::loadSettings()
         m_insertRecord = insertRec;
     }
     m_autoScaleWaveform = autoScale;
+    m_preferStereo = s.value(QStringLiteral("capture/stereo"), true).toBool();
+    if (m_stereoAction)
+        m_stereoAction->setChecked(m_preferStereo);
     m_autoScaleAction->setChecked(autoScale);
     m_spectrogramMode = spectrogram;
     if (m_waveformViewAction && m_spectrogramAction) {
@@ -671,6 +683,7 @@ void MainWindow::saveSettings()
     s.setValue(QStringLiteral("playback/insertRecord"),
                m_insertRecordAction && m_insertRecordAction->isChecked());
     s.setValue(QStringLiteral("view/autoScaleWaveform"), m_autoScaleWaveform);
+    s.setValue(QStringLiteral("capture/stereo"), m_preferStereo);
     s.setValue(QStringLiteral("view/spectrogram"), m_spectrogramMode);
     s.setValue(QStringLiteral("view/takesPanel"), m_takesDock && m_takesDock->isVisible());
 }
@@ -790,6 +803,56 @@ int MainWindow::peakBinCount() const
     // About one peak column per pixel; clamp so tiny/huge windows stay sane.
     const int w = m_waveform ? m_waveform->contentWidth() : 400;
     return qBound(64, w, 4096);
+}
+
+int MainWindow::currentSourceChannelCount() const
+{
+    if (!m_deviceWatcher)
+        return 1;
+    const QString src = currentSourceName();
+    if (src.isEmpty())
+        return 1;
+    const PulseDeviceLists lists = m_deviceWatcher->snapshot();
+    for (const PulseDevice &d : lists.sources) {
+        if (d.name == src)
+            return qMax(1, d.channelCount);
+    }
+    return 1;
+}
+
+int MainWindow::captureChannelCount() const
+{
+    if (!m_preferStereo)
+        return 1;
+    // Cap at stereo for the UI/meter model; >2 channels still record as stereo
+    // only when we request 2 — Pulse remixes. Prefer matching device when ≥2.
+    return currentSourceChannelCount() >= 2 ? 2 : 1;
+}
+
+QAudioFormat MainWindow::captureFormat() const
+{
+    QAudioFormat fmt;
+    fmt.setSampleFormat(QAudioFormat::Int16);
+    fmt.setSampleRate(48000);
+    fmt.setChannelCount(captureChannelCount());
+    return fmt;
+}
+
+void MainWindow::onStereoToggled(bool on)
+{
+    m_preferStereo = on;
+    if (m_inputMeter)
+        m_inputMeter->setStereo(captureChannelCount() >= 2);
+    // Restart monitoring with the new channel layout when idle.
+    if (m_state != AppState::Recording
+        && (m_state == AppState::Ready || m_state == AppState::Error
+            || m_state == AppState::Playing || m_state == AppState::Paused)) {
+        // Force restart even if same device name
+        m_monitorSourceName.clear();
+        startMonitoring();
+    }
+    if (!m_restoringSettings)
+        saveSettings();
 }
 
 void MainWindow::rebuildPeaksFromDocument()
@@ -994,7 +1057,7 @@ void MainWindow::onRecord()
         stopMonitoring();
         m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
         const QString src = currentSourceName();
-        if (!m_capture->start(src, 48000, 1)) {
+        if (!m_capture->start(src, 48000, captureChannelCount())) {
             QMessageBox::critical(this, tr("Error"), tr("Could not open PulseAudio source for recording."));
             m_recordAction->setChecked(false);
             return;
@@ -1004,10 +1067,12 @@ void MainWindow::onRecord()
     }
     m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
 
-    QAudioFormat fmt;
-    fmt.setSampleFormat(QAudioFormat::Int16);
-    fmt.setSampleRate(48000);
-    fmt.setChannelCount(1);
+    QAudioFormat fmt = captureFormat();
+    // Prefer the live capture format if the stream is already open
+    if (m_capture && m_capture->isRunning() && m_capture->format().channelCount() > 0)
+        fmt = m_capture->format();
+    m_recordChannelCount = qMax(1, fmt.channelCount());
+    fmt.setChannelCount(m_recordChannelCount);
     if (!m_wavWriter.open(m_captureTempPath, fmt)) {
         QMessageBox::critical(this, tr("Error"), tr("Could not open WAV file for writing."));
         m_recordAction->setChecked(false);
@@ -1058,7 +1123,7 @@ void MainWindow::finishRecordingStop()
         QAudioFormat liveFmt;
         liveFmt.setSampleFormat(QAudioFormat::Int16);
         liveFmt.setSampleRate(48000);
-        liveFmt.setChannelCount(1);
+        liveFmt.setChannelCount(qMax(1, m_recordChannelCount));
         setWaveformFromPcm(m_recordPcm, liveFmt);
     }
 
@@ -1083,7 +1148,7 @@ void MainWindow::finishRecordingStop()
     QAudioFormat capFmt;
     capFmt.setSampleFormat(QAudioFormat::Int16);
     capFmt.setSampleRate(48000);
-    capFmt.setChannelCount(1);
+    capFmt.setChannelCount(qMax(1, m_recordChannelCount));
 
     if (wantInsert) {
         const QAudioFormat baseFmt = m_insertBaseFormat;
@@ -1094,7 +1159,7 @@ void MainWindow::finishRecordingStop()
         if (!fmtOk) {
             QMessageBox::warning(this, tr("Insert"),
                 tr("Cannot insert: the document format does not match the capture format "
-                   "(need 48 kHz mono 16-bit).\n"
+                   "(need 48 kHz 16-bit, matching channel count).\n"
                    "The new audio was discarded; the document is unchanged."));
             if (!m_captureTempPath.isEmpty())
                 QFile::remove(m_captureTempPath);
@@ -1609,7 +1674,7 @@ void MainWindow::applyDisplayMode()
         QAudioFormat liveFmt;
         liveFmt.setSampleFormat(QAudioFormat::Int16);
         liveFmt.setSampleRate(48000);
-        liveFmt.setChannelCount(1);
+        liveFmt.setChannelCount(qMax(1, m_recordChannelCount));
         m_waveform->setSpectrogram(WavFile::spectrogram(
             m_recordPcm, liveFmt, qBound(64, peakBinCount(), 2048), 256));
     }
@@ -1962,20 +2027,26 @@ void MainWindow::startMonitoring()
     if (!m_capture)
         return;
     const QString src = currentSourceName();
-    // Avoid thrashing: if already running on the same device, keep it
-    if (m_monitoring && m_capture->isRunning() && m_monitorSourceName == src) {
+    const int ch = captureChannelCount();
+    // Avoid thrashing: if already running on the same device and layout, keep it
+    if (m_monitoring && m_capture->isRunning() && m_monitorSourceName == src
+        && m_capture->format().channelCount() == ch) {
         m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
+        if (m_inputMeter)
+            m_inputMeter->setStereo(ch >= 2);
         return;
     }
     stopMonitoring();
     m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
     m_capture->setRecording(false);
-    if (!m_capture->start(src, 48000, 1)) {
+    if (!m_capture->start(src, 48000, ch)) {
         statusBar()->showMessage(tr("Could not open capture device"), 3000);
         return;
     }
     m_monitorSourceName = src;
     m_monitoring = true;
+    if (m_inputMeter)
+        m_inputMeter->setStereo(ch >= 2);
 }
 
 void MainWindow::stopMonitoring()
@@ -1986,8 +2057,12 @@ void MainWindow::stopMonitoring()
     }
     m_monitoring = false;
     m_monitorSourceName.clear();
-    if (m_inputMeter)
-        m_inputMeter->setLevel(0.0);
+    if (m_inputMeter) {
+        if (m_inputMeter->isStereo())
+            m_inputMeter->setLevels(0.0, 0.0);
+        else
+            m_inputMeter->setLevel(0.0);
+    }
 }
 
 void MainWindow::onCaptureError(const QString &msg)
@@ -2041,7 +2116,7 @@ void MainWindow::updateInsertPreviewWaveform()
         QAudioFormat liveFmt;
         liveFmt.setSampleFormat(QAudioFormat::Int16);
         liveFmt.setSampleRate(48000);
-        liveFmt.setChannelCount(1);
+        liveFmt.setChannelCount(qMax(1, m_recordChannelCount));
         const QVector<float> livePeaks = WavFile::peaks(m_recordPcm, liveFmt, liveBins);
         if (!livePeaks.isEmpty()) {
             for (float v : livePeaks)
@@ -2079,11 +2154,17 @@ void MainWindow::onMeterTick()
     if (!m_capture)
         return;
 
-    // Input meter from lock-free peak (no per-buffer GUI events)
-    if (m_monitoring || m_state == AppState::Recording)
-        m_inputMeter->setLevel(m_capture->currentPeak());
-    else
+    // Input meter from lock-free peaks (no per-buffer GUI events)
+    if (m_monitoring || m_state == AppState::Recording) {
+        if (m_inputMeter->isStereo())
+            m_inputMeter->setLevels(m_capture->currentPeakLeft(), m_capture->currentPeakRight());
+        else
+            m_inputMeter->setLevel(m_capture->currentPeak());
+    } else if (m_inputMeter->isStereo()) {
+        m_inputMeter->setLevels(0.0, 0.0);
+    } else {
         m_inputMeter->setLevel(0.0);
+    }
 
     // Drain PCM while recording
     if (m_state == AppState::Recording && m_wavWriter.isOpen()) {
@@ -2096,7 +2177,7 @@ void MainWindow::onMeterTick()
             QAudioFormat liveFmt;
             liveFmt.setSampleFormat(QAudioFormat::Int16);
             liveFmt.setSampleRate(48000);
-            liveFmt.setChannelCount(1);
+            liveFmt.setChannelCount(qMax(1, m_recordChannelCount));
             if (m_insertRecord && !m_insertBasePeaks.isEmpty()) {
                 m_liveRecordPeaks = WavFile::peaks(m_recordPcm, liveFmt, qMax(32, peakBinCount() / 2));
                 updateInsertPreviewWaveform();
