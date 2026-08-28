@@ -59,6 +59,9 @@ void sourceInfoCb(pa_context *, const pa_source_info *i, int eol, void *userdata
     d.description = QString::fromUtf8(i->description);
     d.isMonitor = (i->monitor_of_sink != PA_INVALID_INDEX);
     d.isDefault = (d.name == ctx->lists->defaultSource);
+    d.channelCount = int(i->sample_spec.channels);
+    if (d.channelCount < 1)
+        d.channelCount = 1;
     if (d.isMonitor && !d.description.contains(QLatin1String("Monitor"), Qt::CaseInsensitive))
         d.description = QStringLiteral("Monitor of %1").arg(d.description);
     ctx->lists->sources.append(d);
@@ -77,6 +80,9 @@ void sinkInfoCb(pa_context *, const pa_sink_info *i, int eol, void *userdata)
     d.name = QString::fromUtf8(i->name);
     d.description = QString::fromUtf8(i->description);
     d.isDefault = (d.name == ctx->lists->defaultSink);
+    d.channelCount = int(i->sample_spec.channels);
+    if (d.channelCount < 1)
+        d.channelCount = 1;
     ctx->lists->sinks.append(d);
 }
 
@@ -182,6 +188,9 @@ void watcherSourceInfoCb(pa_context *, const pa_source_info *i, int eol, void *u
     d.description = QString::fromUtf8(i->description);
     d.isMonitor = (i->monitor_of_sink != PA_INVALID_INDEX);
     d.isDefault = (d.name == ctx->lists->defaultSource);
+    d.channelCount = int(i->sample_spec.channels);
+    if (d.channelCount < 1)
+        d.channelCount = 1;
     if (d.isMonitor && !d.description.contains(QStringLiteral("Monitor"), Qt::CaseInsensitive))
         d.description = QStringLiteral("Monitor of %1").arg(d.description);
     ctx->lists->sources.append(d);
@@ -200,6 +209,9 @@ void watcherSinkInfoCb(pa_context *, const pa_sink_info *i, int eol, void *userd
     d.name = QString::fromUtf8(i->name);
     d.description = QString::fromUtf8(i->description);
     d.isDefault = (d.name == ctx->lists->defaultSink);
+    d.channelCount = int(i->sample_spec.channels);
+    if (d.channelCount < 1)
+        d.channelCount = 1;
     ctx->lists->sinks.append(d);
 }
 
@@ -453,7 +465,8 @@ bool PulseCapture::start(const QString &sourceName, int sampleRate, int channels
         QMutexLocker lock(&m_pcmMutex);
         m_pcmQueue.clear();
     }
-    m_peak.store(0.0);
+    m_peakL.store(0.0);
+    m_peakR.store(0.0);
     m_stop = false;
     m_running = true;
     const int session = m_session.fetch_add(1) + 1;
@@ -474,7 +487,8 @@ void PulseCapture::stop()
     m_recording.store(false);
     // Session bump so late emits are ignored; worker leaves after current read.
     m_session.fetch_add(1);
-    m_peak.store(0.0);
+    m_peakL.store(0.0);
+    m_peakR.store(0.0);
 }
 
 void PulseCapture::setRecording(bool on)
@@ -538,15 +552,37 @@ void PulseCapture::runLoop(QString sourceName, int session)
 
         auto *samples = reinterpret_cast<qint16 *>(buf.data());
         const int n = buf.size() / 2;
-        float peak = 0.f;
+        const int ch = qMax(1, int(ss.channels));
+        float peakL = 0.f;
+        float peakR = 0.f;
         const float g = float(m_gain.load());
         for (int i = 0; i < n; ++i) {
             float v = samples[i] / 32768.f * g;
             v = qBound(-1.f, v, 1.f);
-            peak = qMax(peak, qAbs(v));
             samples[i] = qint16(v * 32767.f);
+            const float a = qAbs(v);
+            if (ch <= 1) {
+                peakL = qMax(peakL, a);
+            } else {
+                // Interleaved: even index = left (ch0), odd within frame = ch1, …
+                const int c = i % ch;
+                if (c == 0)
+                    peakL = qMax(peakL, a);
+                else if (c == 1)
+                    peakR = qMax(peakR, a);
+                else {
+                    // Extra channels fold into the louder of L/R for the dual meter
+                    if (peakL >= peakR)
+                        peakL = qMax(peakL, a);
+                    else
+                        peakR = qMax(peakR, a);
+                }
+            }
         }
-        m_peak.store(qreal(peak));
+        if (ch <= 1)
+            peakR = peakL;
+        m_peakL.store(qreal(peakL));
+        m_peakR.store(qreal(peakR));
 
         if (m_recording.load()) {
             QMutexLocker lock(&m_pcmMutex);
@@ -560,7 +596,8 @@ void PulseCapture::runLoop(QString sourceName, int session)
 
     pa_simple_free(s);
     m_running = false;
-    m_peak.store(0.0);
+    m_peakL.store(0.0);
+    m_peakR.store(0.0);
     QMetaObject::invokeMethod(this, [this]() { emit stopped(); }, Qt::QueuedConnection);
 }
 

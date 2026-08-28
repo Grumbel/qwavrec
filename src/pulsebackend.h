@@ -18,6 +18,8 @@ struct PulseDevice {
     QString description;
     bool isMonitor = false;
     bool isDefault = false;
+    /** Channel count from the source/sink sample spec (1 = mono, 2 = stereo, …). */
+    int channelCount = 1;
 };
 
 /**
@@ -115,8 +117,14 @@ public:
     QAudioFormat format() const { return m_format; }
     void setGain(qreal gain) { m_gain.store(gain); }
 
-    /** Latest peak 0..1 for the input meter (lock-free). */
-    qreal currentPeak() const { return m_peak.load(); }
+    /** Latest peak 0..1 (max across channels) for the input meter (lock-free). */
+    qreal currentPeak() const {
+        const qreal l = m_peakL.load();
+        const qreal r = m_peakR.load();
+        return l > r ? l : r;
+    }
+    qreal currentPeakLeft() const { return m_peakL.load(); }
+    qreal currentPeakRight() const { return m_peakR.load(); }
 
     /** Drain PCM accumulated since last call (for recording). */
     QByteArray takeRecordedAudio();
@@ -136,7 +144,8 @@ private:
     std::atomic<bool> m_recording{false};
     std::atomic<int> m_session{0};
     std::atomic<qreal> m_gain{1.0};
-    std::atomic<qreal> m_peak{0.0};
+    std::atomic<qreal> m_peakL{0.0};
+    std::atomic<qreal> m_peakR{0.0};
 
     QAudioFormat m_format;
     QMutex m_pcmMutex;
