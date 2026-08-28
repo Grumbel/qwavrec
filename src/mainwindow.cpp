@@ -334,7 +334,8 @@ void MainWindow::createActions()
     m_spectrogramAction->setShortcut(QKeySequence(tr("Ctrl+Shift+S")));
     connect(m_spectrogramAction, &QAction::toggled, this, &MainWindow::onSpectrogramToggled);
 
-    m_aboutAction = new QAction(tr("&About QWavRec"), this);
+    m_aboutAction = new QAction(windowIcon(), tr("&About QWavRec"), this);
+    m_aboutAction->setStatusTip(tr("About QWavRec"));
     connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAbout);
 }
 
@@ -366,11 +367,10 @@ void MainWindow::createMenus()
     transportMenu->addAction(m_playAction);
     transportMenu->addAction(m_stopAction);
     transportMenu->addSeparator();
-    transportMenu->addAction(m_undoAction);
-    transportMenu->addAction(m_redoAction);
-    transportMenu->addAction(m_historyAction);
-    transportMenu->addSeparator();
     transportMenu->addAction(m_loopAction);
+    transportMenu->addSeparator();
+    transportMenu->addAction(m_undoAction);   // Previous Take
+    transportMenu->addAction(m_redoAction);   // Next Take
 
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(m_historyAction);
@@ -1630,7 +1630,10 @@ void MainWindow::onTakesDeleteRequested(int index)
 
 void MainWindow::onAbout()
 {
-    QMessageBox::about(this, tr("About QWavRec"),
+    QMessageBox box(this);
+    box.setWindowTitle(tr("About QWavRec"));
+    box.setTextFormat(Qt::RichText);
+    box.setText(
         tr("<h3>QWavRec</h3>"
            "<p>Simple WAV recorder/player using <b>PulseAudio</b> "
            "(sources including monitors, and sinks).</p>"
@@ -1640,6 +1643,11 @@ void MainWindow::onAbout()
            "<a href=\"https://github.com/Grumbel/qwavrec\">"
            "https://github.com/Grumbel/qwavrec</a></p>")
             .arg(QApplication::applicationVersion()));
+    const QIcon icon = windowIcon();
+    if (!icon.isNull())
+        box.setIconPixmap(icon.pixmap(64, 64));
+    box.setStandardButtons(QMessageBox::Ok);
+    box.exec();
 }
 
 void MainWindow::refreshDevices()
