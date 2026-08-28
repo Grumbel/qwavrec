@@ -208,6 +208,8 @@ private:
     /** Source name currently opened for the input meter (empty = server default). */
     QString m_monitorSourceName;
     QTimer *m_meterTimer = nullptr;
+    /** Periodic re-query of Pulse sources/sinks so hot-plugged devices appear. */
+    QTimer *m_deviceRefreshTimer = nullptr;
 };
 
 #endif

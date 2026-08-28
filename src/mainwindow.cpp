@@ -17,6 +17,7 @@
 #include <QHBoxLayout>
 #include <QFormLayout>
 #include <QComboBox>
+#include <QAbstractItemView>
 #include <QLabel>
 #include <QSlider>
 #include <QToolBar>
@@ -93,6 +94,14 @@ MainWindow::MainWindow(QWidget *parent)
     m_meterTimer->setInterval(50); // 20 Hz — smooth meter, no event flood
     connect(m_meterTimer, &QTimer::timeout, this, &MainWindow::onMeterTick);
     m_meterTimer->start();
+
+    // Re-enumerate sources/sinks so newly connected devices show up without restart.
+    // Interval is a compromise: frequent enough for hot-plug, rare enough that the
+    // synchronous PulseDevices::query() hitch stays unnoticeable.
+    m_deviceRefreshTimer = new QTimer(this);
+    m_deviceRefreshTimer->setInterval(2500);
+    connect(m_deviceRefreshTimer, &QTimer::timeout, this, &MainWindow::refreshDevices);
+    m_deviceRefreshTimer->start();
 
     connect(m_inputCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onInputDeviceChanged);
@@ -1537,6 +1546,11 @@ void MainWindow::onAbout()
 
 void MainWindow::refreshDevices()
 {
+    // Do not rebuild while the user is interacting with a popup list.
+    if ((m_inputCombo && m_inputCombo->view() && m_inputCombo->view()->isVisible())
+        || (m_outputCombo && m_outputCombo->view() && m_outputCombo->view()->isVisible()))
+        return;
+
     QString curIn = m_pendingInputName;
     QString curOut = m_pendingOutputName;
     if (curIn.isEmpty() && m_inputCombo->currentIndex() >= 0)
@@ -1546,45 +1560,67 @@ void MainWindow::refreshDevices()
 
     // Single PulseAudio connection for sources + sinks + defaults
     const PulseDevices::Lists lists = PulseDevices::query();
+    if (!lists.ok)
+        return;
+
+    // Fast path: if names and count match the current combos, skip the rebuild.
+    auto namesMatch = [](QComboBox *box, const QVector<PulseDevice> &devs) {
+        if (!box || box->count() != devs.size())
+            return false;
+        for (int i = 0; i < devs.size(); ++i) {
+            if (box->itemData(i).toString() != devs[i].name)
+                return false;
+        }
+        return true;
+    };
+    const bool inSame = namesMatch(m_inputCombo, lists.sources);
+    const bool outSame = namesMatch(m_outputCombo, lists.sinks);
+    if (inSame && outSame && m_pendingInputName.isEmpty() && m_pendingOutputName.isEmpty())
+        return;
 
     m_inputCombo->blockSignals(true);
     m_outputCombo->blockSignals(true);
-    m_inputCombo->clear();
-    int selIn = 0, i = 0;
-    for (const PulseDevice &dev : lists.sources) {
-        QString label = dev.description;
-        if (dev.isMonitor)
-            label += tr(" [monitor]");
-        if (dev.isDefault)
-            label += tr(" (default)");
-        m_inputCombo->addItem(label, dev.name);
-        if (dev.name == curIn || (curIn.isEmpty() && dev.isDefault))
-            selIn = i;
-        ++i;
-    }
-    if (m_inputCombo->count())
-        m_inputCombo->setCurrentIndex(selIn);
 
-    m_outputCombo->clear();
-    int selOut = 0;
-    i = 0;
-    for (const PulseDevice &dev : lists.sinks) {
-        QString label = dev.description;
-        if (dev.isDefault)
-            label += tr(" (default)");
-        m_outputCombo->addItem(label, dev.name);
-        if (dev.name == curOut || (curOut.isEmpty() && dev.isDefault))
-            selOut = i;
-        ++i;
+    if (!inSame || !m_pendingInputName.isEmpty()) {
+        m_inputCombo->clear();
+        int selIn = 0, i = 0;
+        for (const PulseDevice &dev : lists.sources) {
+            QString label = dev.description;
+            if (dev.isMonitor)
+                label += tr(" [monitor]");
+            if (dev.isDefault)
+                label += tr(" (default)");
+            m_inputCombo->addItem(label, dev.name);
+            if (dev.name == curIn || (curIn.isEmpty() && dev.isDefault))
+                selIn = i;
+            ++i;
+        }
+        if (m_inputCombo->count())
+            m_inputCombo->setCurrentIndex(selIn);
     }
-    if (m_outputCombo->count())
-        m_outputCombo->setCurrentIndex(selOut);
+
+    if (!outSame || !m_pendingOutputName.isEmpty()) {
+        m_outputCombo->clear();
+        int selOut = 0, i = 0;
+        for (const PulseDevice &dev : lists.sinks) {
+            QString label = dev.description;
+            if (dev.isDefault)
+                label += tr(" (default)");
+            m_outputCombo->addItem(label, dev.name);
+            if (dev.name == curOut || (curOut.isEmpty() && dev.isDefault))
+                selOut = i;
+            ++i;
+        }
+        if (m_outputCombo->count())
+            m_outputCombo->setCurrentIndex(selOut);
+    }
 
     m_inputCombo->blockSignals(false);
     m_outputCombo->blockSignals(false);
     m_pendingInputName.clear();
     m_pendingOutputName.clear();
 
+    // Apply selection (restarts capture / updates sink name when they actually changed).
     if (m_inputCombo->count())
         onInputDeviceChanged(m_inputCombo->currentIndex());
     if (m_outputCombo->count())
