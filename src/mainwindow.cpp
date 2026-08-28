@@ -933,14 +933,11 @@ void MainWindow::onRecord()
     m_insertAtMs = 0;
     m_captureTempPath.clear();
 
+    // Insert with an empty document is pointless — behave as a normal record.
+    if (m_insertRecord && (!m_player || m_player->pcm().isEmpty()))
+        m_insertRecord = false;
+
     if (m_insertRecord) {
-        if (!m_player || m_player->pcm().isEmpty()) {
-            QMessageBox::information(this, tr("Insert"),
-                tr("Nothing to insert into.\n"
-                   "Open or record a take first, seek to the insert point, then record."));
-            m_recordAction->setChecked(false);
-            return;
-        }
         // Snapshot document before anything can change it
         m_insertBasePcm = m_player->pcm();
         m_insertBaseFormat = m_player->format();
