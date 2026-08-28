@@ -844,6 +844,8 @@ void MainWindow::applyPeaksToWaveform(const QVector<float> &left, const QVector<
 
 void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt)
 {
+    if (m_outputMeter)
+        m_outputMeter->setStereo(fmt.channelCount() >= 2);
     const int bins = peakBinCount();
     const WavFile::ChannelPeaks ch = WavFile::channelPeaks(pcm, fmt, bins);
     m_rawPeaks = WavFile::peaks(pcm, fmt, bins);
@@ -2386,7 +2388,10 @@ void MainWindow::onPlayerStateChanged(PulsePlayback::State state)
             m_seekSlider->setValue(0);
             m_waveform->setPlaybackPosition(0.0);
             updateTimeLabel();
-            m_outputMeter->setLevel(0.0);
+            if (m_outputMeter->isStereo())
+                m_outputMeter->setLevels(0.0, 0.0);
+            else
+                m_outputMeter->setLevel(0.0);
             startMonitoring();
         }
         break;
@@ -2402,9 +2407,14 @@ void MainWindow::onPlayerPosition(qint64 ms)
         updateTimeLabel();
         if (m_duration > 0)
             m_waveform->setPlaybackPosition(static_cast<qreal>(ms) / m_duration);
-        if (m_state == AppState::Playing) {
+        if (m_state == AppState::Playing && m_outputMeter) {
             const qreal vol = m_outputVolumeSlider->value() / 100.0;
-            m_outputMeter->setLevel(m_player->levelAtPosition(ms) * vol);
+            qreal l = 0.0, r = 0.0;
+            m_player->levelsAtPosition(ms, &l, &r);
+            if (m_outputMeter->isStereo())
+                m_outputMeter->setLevels(l * vol, r * vol);
+            else
+                m_outputMeter->setLevel(qMax(l, r) * vol);
         }
     }
 }

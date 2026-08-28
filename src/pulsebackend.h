@@ -182,7 +182,10 @@ public:
     State state() const { return m_state; }
     qint64 position() const;
     qint64 duration() const { return m_durationMs; }
+    /** Peak 0..1 over a short window at @p ms (max of L/R). */
     qreal levelAtPosition(qint64 ms) const;
+    /** Per-channel peaks 0..1 over a short window; mono sets both equal. */
+    void levelsAtPosition(qint64 ms, qreal *left, qreal *right) const;
 
 signals:
     void stateChanged(PulsePlayback::State state);

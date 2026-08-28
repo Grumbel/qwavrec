@@ -901,22 +901,55 @@ void PulsePlayback::runLoop(int generation)
     }
 }
 
-qreal PulsePlayback::levelAtPosition(qint64 ms) const
+void PulsePlayback::levelsAtPosition(qint64 ms, qreal *left, qreal *right) const
 {
+    if (left)
+        *left = 0.0;
+    if (right)
+        *right = 0.0;
     QMutexLocker lock(&m_mutex);
     if (m_pcm.isEmpty() || m_format.bytesPerFrame() <= 0)
-        return 0.0;
+        return;
     const int bpf = m_format.bytesPerFrame();
+    const int ch = qMax(1, m_format.channelCount());
     qint64 off = msToBytes(ms);
     off = (off / bpf) * bpf;
     const qint64 end = qMin(off + msToBytes(20), qint64(m_pcm.size()));
     if (off >= m_pcm.size())
-        return 0.0;
-    float peak = 0.f;
+        return;
+    float peakL = 0.f;
+    float peakR = 0.f;
     if (m_format.sampleFormat() == QAudioFormat::Int16) {
         const auto *s = reinterpret_cast<const qint16 *>(m_pcm.constData() + off);
-        for (int i = 0, n = int((end - off) / 2); i < n; ++i)
-            peak = qMax(peak, qAbs(s[i] / 32768.f));
+        const int n = int((end - off) / 2);
+        for (int i = 0; i < n; ++i) {
+            const float a = qAbs(s[i] / 32768.f);
+            if (ch <= 1) {
+                peakL = qMax(peakL, a);
+            } else {
+                const int c = i % ch;
+                if (c == 0)
+                    peakL = qMax(peakL, a);
+                else if (c == 1)
+                    peakR = qMax(peakR, a);
+                else if (peakL >= peakR)
+                    peakL = qMax(peakL, a);
+                else
+                    peakR = qMax(peakR, a);
+            }
+        }
+        if (ch <= 1)
+            peakR = peakL;
     }
-    return qreal(peak);
+    if (left)
+        *left = qreal(peakL);
+    if (right)
+        *right = qreal(peakR);
+}
+
+qreal PulsePlayback::levelAtPosition(qint64 ms) const
+{
+    qreal l = 0.0, r = 0.0;
+    levelsAtPosition(ms, &l, &r);
+    return l > r ? l : r;
 }
