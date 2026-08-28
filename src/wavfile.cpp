@@ -9,6 +9,7 @@
 #include <QImage>
 #include <QVector>
 #include <cmath>
+#include <functional>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -111,30 +112,35 @@ QVector<float> peaks(const QByteArray &pcm, const QAudioFormat &format, int targ
     out.reserve(targetBins);
     const double step = double(qMax(1, frames)) / targetBins;
 
+    const int channels = qMax(1, format.channelCount());
     for (int i = 0; i < targetBins; ++i) {
         const int a = int(i * step);
         const int b = qMin(int((i + 1) * step), frames);
         float mx = 0.f;
         for (int f = a; f < b; ++f) {
             const char *frame = pcm.constData() + f * bpf;
-            float sample = 0.f;
-            switch (format.sampleFormat()) {
-            case QAudioFormat::Int16:
-                sample = qFromLittleEndian<qint16>(reinterpret_cast<const uchar *>(frame)) / 32768.f;
-                break;
-            case QAudioFormat::Float:
-                sample = *reinterpret_cast<const float *>(frame);
-                break;
-            case QAudioFormat::UInt8:
-                sample = (quint8(frame[0]) - 128) / 128.f;
-                break;
-            case QAudioFormat::Int32:
-                sample = qFromLittleEndian<qint32>(reinterpret_cast<const uchar *>(frame)) / 2147483648.f;
-                break;
-            default:
-                break;
+            for (int c = 0; c < channels; ++c) {
+                float sample = 0.f;
+                switch (format.sampleFormat()) {
+                case QAudioFormat::Int16:
+                    sample = qFromLittleEndian<qint16>(
+                        reinterpret_cast<const uchar *>(frame) + c * 2) / 32768.f;
+                    break;
+                case QAudioFormat::Float:
+                    sample = reinterpret_cast<const float *>(frame)[c];
+                    break;
+                case QAudioFormat::UInt8:
+                    sample = (quint8(frame[c]) - 128) / 128.f;
+                    break;
+                case QAudioFormat::Int32:
+                    sample = qFromLittleEndian<qint32>(
+                        reinterpret_cast<const uchar *>(frame) + c * 4) / 2147483648.f;
+                    break;
+                default:
+                    break;
+                }
+                mx = qMax(mx, qAbs(sample));
             }
-            mx = qMax(mx, qAbs(sample));
         }
         out.append(mx);
     }
@@ -164,6 +170,7 @@ bool peakNormalizeInt16(QByteArray &pcm)
 
 namespace {
 
+/** Peak sample across all channels in a frame (signed value of the louder channel). */
 float sampleAt(const QByteArray &pcm, const QAudioFormat &format, int frame)
 {
     const int bpf = format.bytesPerFrame();
@@ -172,18 +179,72 @@ float sampleAt(const QByteArray &pcm, const QAudioFormat &format, int frame)
     const int frames = pcm.size() / bpf;
     if (frame >= frames)
         return 0.f;
+    const int channels = qMax(1, format.channelCount());
     const char *p = pcm.constData() + frame * bpf;
-    switch (format.sampleFormat()) {
-    case QAudioFormat::Int16:
-        return qFromLittleEndian<qint16>(reinterpret_cast<const uchar *>(p)) / 32768.f;
-    case QAudioFormat::Float:
-        return *reinterpret_cast<const float *>(p);
-    case QAudioFormat::UInt8:
-        return (quint8(p[0]) - 128) / 128.f;
-    case QAudioFormat::Int32:
-        return qFromLittleEndian<qint32>(reinterpret_cast<const uchar *>(p)) / 2147483648.f;
-    default:
-        return 0.f;
+    float best = 0.f;
+    float bestAbs = 0.f;
+    for (int c = 0; c < channels; ++c) {
+        float sample = 0.f;
+        switch (format.sampleFormat()) {
+        case QAudioFormat::Int16:
+            sample = qFromLittleEndian<qint16>(
+                reinterpret_cast<const uchar *>(p) + c * 2) / 32768.f;
+            break;
+        case QAudioFormat::Float:
+            sample = reinterpret_cast<const float *>(p)[c];
+            break;
+        case QAudioFormat::UInt8:
+            sample = (quint8(p[c]) - 128) / 128.f;
+            break;
+        case QAudioFormat::Int32:
+            sample = qFromLittleEndian<qint32>(
+                reinterpret_cast<const uchar *>(p) + c * 4) / 2147483648.f;
+            break;
+        default:
+            break;
+        }
+        const float a = qAbs(sample);
+        if (a > bestAbs) {
+            bestAbs = a;
+            best = sample;
+        }
+    }
+    return best;
+}
+
+/** Every channel sample in a frame (for density histograms). */
+void forEachSampleInFrame(const QByteArray &pcm, const QAudioFormat &format, int frame,
+                          const std::function<void(float)> &fn)
+{
+    const int bpf = format.bytesPerFrame();
+    if (bpf <= 0 || frame < 0)
+        return;
+    const int frames = pcm.size() / bpf;
+    if (frame >= frames)
+        return;
+    const int channels = qMax(1, format.channelCount());
+    const char *p = pcm.constData() + frame * bpf;
+    for (int c = 0; c < channels; ++c) {
+        float sample = 0.f;
+        switch (format.sampleFormat()) {
+        case QAudioFormat::Int16:
+            sample = qFromLittleEndian<qint16>(
+                reinterpret_cast<const uchar *>(p) + c * 2) / 32768.f;
+            break;
+        case QAudioFormat::Float:
+            sample = reinterpret_cast<const float *>(p)[c];
+            break;
+        case QAudioFormat::UInt8:
+            sample = (quint8(p[c]) - 128) / 128.f;
+            break;
+        case QAudioFormat::Int32:
+            sample = qFromLittleEndian<qint32>(
+                reinterpret_cast<const uchar *>(p) + c * 4) / 2147483648.f;
+            break;
+        default:
+            break;
+        }
+        fn(sample);
     }
 }
 
@@ -322,15 +383,17 @@ QImage waveformDensity(const QByteArray &pcm, const QAudioFormat &format,
         const int b = qMin(int((col + 1) * step), frames);
         float *colCounts = counts.data() + col * ampBins;
         for (int f = a; f < b; ++f) {
-            float s = sampleAt(pcm, format, f) * scale;
-            // Map [-1, +1] → [0, ampBins-1]; clamp outliers
-            const float u = (s + 1.f) * 0.5f;
-            int bin = int(u * float(ampBins));
-            if (bin < 0)
-                bin = 0;
-            else if (bin >= ampBins)
-                bin = ampBins - 1;
-            colCounts[bin] += 1.f;
+            forEachSampleInFrame(pcm, format, f, [&](float s) {
+                s *= scale;
+                // Map [-1, +1] → [0, ampBins-1]; clamp outliers
+                const float u = (s + 1.f) * 0.5f;
+                int bin = int(u * float(ampBins));
+                if (bin < 0)
+                    bin = 0;
+                else if (bin >= ampBins)
+                    bin = ampBins - 1;
+                colCounts[bin] += 1.f;
+            });
         }
         for (int row = 0; row < ampBins; ++row)
             maxCount = qMax(maxCount, colCounts[row]);
