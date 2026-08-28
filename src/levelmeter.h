@@ -13,7 +13,12 @@ class LevelMeter : public QWidget
 public:
     explicit LevelMeter(QWidget *parent = nullptr);
 
+    /** Mono: single bar from @p level. */
     void setLevel(qreal level);
+    /** Stereo: split bar L | R. */
+    void setLevels(qreal left, qreal right);
+    void setStereo(bool on);
+    bool isStereo() const { return m_stereo; }
     void setPeak(qreal peak);
 
 protected:
@@ -22,9 +27,15 @@ protected:
     QSize minimumSizeHint() const override;
 
 private:
-    qreal m_level = 0.0;
+    void paintBar(QPainter &p, const QRect &r, qreal level, qreal peakHold);
+    void updatePeakHold(qreal level, qreal &hold);
+
+    bool m_stereo = false;
+    qreal m_levelL = 0.0;
+    qreal m_levelR = 0.0;
     qreal m_peak = 0.0;
-    qreal m_peakHold = 0.0;
+    qreal m_peakHoldL = 0.0;
+    qreal m_peakHoldR = 0.0;
 };
 
 #endif
