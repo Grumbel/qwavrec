@@ -205,6 +205,8 @@ private:
     bool m_restoringSettings = false;
     bool m_autoScaleWaveform = false;
     bool m_monitoring = false;
+    /** Source name currently opened for the input meter (empty = server default). */
+    QString m_monitorSourceName;
     QTimer *m_meterTimer = nullptr;
 };
 

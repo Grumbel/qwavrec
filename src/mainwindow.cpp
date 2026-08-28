@@ -816,11 +816,13 @@ void MainWindow::onRecord()
     if (!m_monitoring || !m_capture->isRunning()) {
         stopMonitoring();
         m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
-        if (!m_capture->start(currentSourceName(), 48000, 1)) {
+        const QString src = currentSourceName();
+        if (!m_capture->start(src, 48000, 1)) {
             QMessageBox::critical(this, tr("Error"), tr("Could not open PulseAudio source for recording."));
             m_recordAction->setChecked(false);
             return;
         }
+        m_monitorSourceName = src;
         m_monitoring = true;
     }
     m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
@@ -880,6 +882,8 @@ void MainWindow::finishRecordingStop()
 
     setAppState(AppState::Ready);
     m_monitoring = m_capture && m_capture->isRunning();
+    if (!m_monitoring)
+        m_monitorSourceName.clear();
 
     if (m_recordPcm.isEmpty()) {
         if (!m_captureTempPath.isEmpty())
@@ -1663,18 +1667,20 @@ void MainWindow::startMonitoring()
         return;
     if (!m_capture)
         return;
+    const QString src = currentSourceName();
     // Avoid thrashing: if already running on the same device, keep it
-    if (m_monitoring && m_capture->isRunning()) {
+    if (m_monitoring && m_capture->isRunning() && m_monitorSourceName == src) {
         m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
         return;
     }
     stopMonitoring();
     m_capture->setGain(m_inputVolumeSlider->value() / 100.0);
     m_capture->setRecording(false);
-    if (!m_capture->start(currentSourceName(), 48000, 1)) {
+    if (!m_capture->start(src, 48000, 1)) {
         statusBar()->showMessage(tr("Could not open capture device"), 3000);
         return;
     }
+    m_monitorSourceName = src;
     m_monitoring = true;
 }
 
@@ -1685,6 +1691,7 @@ void MainWindow::stopMonitoring()
         m_capture->stop();
     }
     m_monitoring = false;
+    m_monitorSourceName.clear();
     if (m_inputMeter)
         m_inputMeter->setLevel(0.0);
 }
