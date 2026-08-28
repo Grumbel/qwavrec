@@ -41,6 +41,7 @@ protected:
 
 private slots:
     void refreshDevices();
+    void onPulseDevicesChanged();
     void onInputDeviceChanged(int index);
     void onOutputDeviceChanged(int index);
     void onInputVolumeChanged(int value);
@@ -216,8 +217,10 @@ private:
     /** Source name currently opened for the input meter (empty = server default). */
     QString m_monitorSourceName;
     QTimer *m_meterTimer = nullptr;
-    /** Periodic re-query of Pulse sources/sinks so hot-plugged devices appear. */
-    QTimer *m_deviceRefreshTimer = nullptr;
+    /** Event-driven source/sink list (Pulse subscription on a worker thread). */
+    class PulseDeviceWatcher *m_deviceWatcher = nullptr;
+    /** Debounce hotplug storms before rebuilding combos. */
+    QTimer *m_deviceDebounceTimer = nullptr;
     QTimer *m_waveformResizeTimer = nullptr;
 };
 

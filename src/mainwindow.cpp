@@ -98,13 +98,16 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_meterTimer, &QTimer::timeout, this, &MainWindow::onMeterTick);
     m_meterTimer->start();
 
-    // Re-enumerate sources/sinks so newly connected devices show up without restart.
-    // Interval is a compromise: frequent enough for hot-plug, rare enough that the
-    // synchronous PulseDevices::query() hitch stays unnoticeable.
-    m_deviceRefreshTimer = new QTimer(this);
-    m_deviceRefreshTimer->setInterval(2500);
-    connect(m_deviceRefreshTimer, &QTimer::timeout, this, &MainWindow::refreshDevices);
-    m_deviceRefreshTimer->start();
+    // Event-driven device list: long-lived Pulse context on a worker thread
+    // (subscribe to source/sink/server). Debounce storms before touching combos.
+    m_deviceWatcher = new PulseDeviceWatcher(this);
+    m_deviceDebounceTimer = new QTimer(this);
+    m_deviceDebounceTimer->setSingleShot(true);
+    m_deviceDebounceTimer->setInterval(100);
+    connect(m_deviceDebounceTimer, &QTimer::timeout, this, &MainWindow::refreshDevices);
+    connect(m_deviceWatcher, &PulseDeviceWatcher::devicesChanged,
+            this, &MainWindow::onPulseDevicesChanged, Qt::QueuedConnection);
+    m_deviceWatcher->start();
 
     connect(m_inputCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onInputDeviceChanged);
@@ -154,6 +157,8 @@ MainWindow::~MainWindow()
         m_player->stop();
     if (m_capture)
         m_capture->stop();
+    if (m_deviceWatcher)
+        m_deviceWatcher->stop();
     if (!m_tempPath.isEmpty() && m_isTemporary)
         QFile::remove(m_tempPath);
 }
@@ -1682,6 +1687,12 @@ void MainWindow::onAbout()
     box.exec();
 }
 
+void MainWindow::onPulseDevicesChanged()
+{
+    if (m_deviceDebounceTimer)
+        m_deviceDebounceTimer->start();
+}
+
 void MainWindow::refreshDevices()
 {
     // Do not rebuild while the user is interacting with a popup list.
@@ -1696,8 +1707,16 @@ void MainWindow::refreshDevices()
     if (curOut.isEmpty() && m_outputCombo->currentIndex() >= 0)
         curOut = m_outputCombo->currentData().toString();
 
-    // Single PulseAudio connection for sources + sinks + defaults
-    const PulseDevices::Lists lists = PulseDevices::query();
+    // Prefer the watcher cache (same long-lived context as hotplug). Fall back
+    // to a one-shot query only before the first successful enumeration.
+    PulseDeviceLists lists;
+    if (m_deviceWatcher) {
+        lists = m_deviceWatcher->snapshot();
+        if (!lists.ok)
+            lists = PulseDevices::query();
+    } else {
+        lists = PulseDevices::query();
+    }
     if (!lists.ok)
         return;
 
