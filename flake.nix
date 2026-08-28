@@ -10,9 +10,8 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-      in
-      {
-        packages.default = pkgs.stdenv.mkDerivation {
+
+        qwavrec = pkgs.stdenv.mkDerivation {
           pname = "qwavrec";
           version = "0.1.0";
 
@@ -28,7 +27,6 @@
             qt6.qtbase
             qt6.qtmultimedia
             libpulseaudio
-            
           ];
 
           cmakeFlags = [
@@ -43,14 +41,31 @@
             platforms = platforms.linux;
           };
         };
+      in
+      {
+        packages.default = qwavrec;
+
+        # nix flake check
+        # - qwavrec: full package build (compile + link)
+        # - reuse: SPDX / REUSE.toml compliance
+        checks = {
+          qwavrec = qwavrec;
+          reuse = pkgs.runCommand "qwavrec-reuse-lint" {
+            nativeBuildInputs = [ pkgs.reuse ];
+          } ''
+            reuse --root ${self} lint
+            touch "$out"
+          '';
+        };
 
         devShells.default = pkgs.mkShell {
-          inputsFrom = [ self.packages.${system}.default ];
+          inputsFrom = [ qwavrec ];
           packages = with pkgs; [
             cmake
             ninja
             qt6.qttools
             gdb
+            reuse
           ];
         };
       });

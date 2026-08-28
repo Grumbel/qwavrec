@@ -26,6 +26,7 @@ License: **GPL-3.0-or-later** (REUSE / SPDX headers on sources).
 ```bash
 nix run .          # build & run
 nix develop        # shell with cmake/qt
+nix flake check    # build package + REUSE lint
 ```
 
 Delivery of changes in this workflow uses **stacking git bundles**

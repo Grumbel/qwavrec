@@ -36,6 +36,8 @@ No separate Stop button — the Record and Play buttons act as toggles.
 ```bash
 nix build
 ./result/bin/qwavrec
+
+nix flake check    # compile + REUSE license lint
 ```
 
 ### Manual
