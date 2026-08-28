@@ -129,6 +129,7 @@ private:
     void rebuildPeaksFromDocument();
     void applyDisplayMode();
     QVector<float> normalizedPeaks(const QVector<float> &raw) const;
+    void applyPeaksToWaveform(const QVector<float> &left, const QVector<float> &right);
 
     void loadSettings();
     void saveSettings();

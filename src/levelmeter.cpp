@@ -51,8 +51,15 @@ void LevelMeter::setPeak(qreal peak)
     update();
 }
 
-QSize LevelMeter::sizeHint() const { return QSize(120, 20); }
-QSize LevelMeter::minimumSizeHint() const { return QSize(60, 14); }
+QSize LevelMeter::sizeHint() const
+{
+    return m_stereo ? QSize(120, 28) : QSize(120, 20);
+}
+
+QSize LevelMeter::minimumSizeHint() const
+{
+    return m_stereo ? QSize(60, 22) : QSize(60, 14);
+}
 
 void LevelMeter::paintBar(QPainter &p, const QRect &r, qreal level, qreal peakHold)
 {
@@ -62,21 +69,31 @@ void LevelMeter::paintBar(QPainter &p, const QRect &r, qreal level, qreal peakHo
 
     const int segments = 20;
     const int gap = 1;
-    const int segW = (r.width() - (segments - 1) * gap) / segments;
+    const int innerW = r.width() - 2;
+    const int segW = (innerW - (segments - 1) * gap) / segments;
     if (segW < 2) {
-        int w = static_cast<int>(r.width() * level);
+        const int w = static_cast<int>((r.width() - 2) * level);
         QLinearGradient g(r.topLeft(), r.topRight());
         g.setColorAt(0.0, QColor(0, 180, 0));
         g.setColorAt(0.6, QColor(220, 220, 0));
         g.setColorAt(0.85, QColor(220, 80, 0));
         g.setColorAt(1.0, QColor(200, 0, 0));
-        p.fillRect(r.x(), r.y(), w, r.height(), g);
+        p.fillRect(r.x() + 1, r.y() + 1, w, r.height() - 2, g);
+        // Peak hold: thin full-height mark
+        if (peakHold > 0.01) {
+            const int px = r.x() + 1 + static_cast<int>((r.width() - 2) * peakHold);
+            p.fillRect(px - 1, r.y() + 1, 2, r.height() - 2, QColor(240, 240, 240));
+        }
         return;
     }
 
+    int peakSeg = -1;
+    if (peakHold > 0.01)
+        peakSeg = qBound(0, int(peakHold * segments) - 1, segments - 1);
+
     for (int i = 0; i < segments; ++i) {
         const qreal thresh = (i + 1) / static_cast<qreal>(segments);
-        const int x = r.x() + i * (segW + gap);
+        const int x = r.x() + 1 + i * (segW + gap);
         QRect seg(x, r.y() + 1, segW, r.height() - 2);
         QColor color = (thresh < 0.6) ? QColor(0, 160, 0)
                      : (thresh < 0.85) ? QColor(200, 180, 0)
@@ -85,8 +102,13 @@ void LevelMeter::paintBar(QPainter &p, const QRect &r, qreal level, qreal peakHo
             p.fillRect(seg, color);
         else
             p.fillRect(seg, color.darker(280));
-        if (peakHold >= thresh && peakHold < thresh + 1.0 / segments)
-            p.fillRect(seg.adjusted(0, 0, 0, -seg.height() / 2), Qt::white);
+    }
+    // Peak hold: narrow full-height tick at the held segment (not a half-height block)
+    if (peakSeg >= 0) {
+        const int x = r.x() + 1 + peakSeg * (segW + gap);
+        const int tickW = qMax(2, segW / 3);
+        const int tickX = x + (segW - tickW) / 2;
+        p.fillRect(tickX, r.y() + 1, tickW, r.height() - 2, QColor(240, 240, 240));
     }
 }
 
@@ -102,18 +124,18 @@ void LevelMeter::paintEvent(QPaintEvent *event)
         return;
     }
 
-    // Split L | R with a thin gap and channel labels
-    const int gap = 3;
-    const int half = (outer.width() - gap) / 2;
-    const QRect leftR(outer.x(), outer.y(), half, outer.height());
-    const QRect rightR(outer.x() + half + gap, outer.y(), outer.width() - half - gap, outer.height());
-    paintBar(p, leftR, m_levelL, m_peakHoldL);
-    paintBar(p, rightR, m_levelR, m_peakHoldR);
+    // Stacked L (top) / R (bottom)
+    const int gap = 2;
+    const int half = (outer.height() - gap) / 2;
+    const QRect topR(outer.x(), outer.y(), outer.width(), half);
+    const QRect botR(outer.x(), outer.y() + half + gap, outer.width(), outer.height() - half - gap);
+    paintBar(p, topR, m_levelL, m_peakHoldL);
+    paintBar(p, botR, m_levelR, m_peakHoldR);
 
-    p.setPen(QColor(140, 150, 160));
+    p.setPen(QColor(160, 170, 180));
     QFont f = font();
     f.setPointSize(qMax(7, f.pointSize() - 2));
     p.setFont(f);
-    p.drawText(leftR.adjusted(2, 0, -2, 0), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("L"));
-    p.drawText(rightR.adjusted(2, 0, -2, 0), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("R"));
+    p.drawText(topR.adjusted(3, 0, -2, 0), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("L"));
+    p.drawText(botR.adjusted(3, 0, -2, 0), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("R"));
 }

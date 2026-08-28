@@ -24,9 +24,29 @@ WaveformWidget::WaveformWidget(QWidget *parent)
 
 void WaveformWidget::setPeaks(const QVector<float> &peaks)
 {
-    if (m_peaks == peaks)
+    if (m_peaks == peaks && m_peaksL.isEmpty() && m_peaksR.isEmpty())
         return;
     m_peaks = peaks;
+    m_peaksL.clear();
+    m_peaksR.clear();
+    invalidateBodyCache();
+    update();
+}
+
+void WaveformWidget::setChannelPeaks(const QVector<float> &left, const QVector<float> &right)
+{
+    if (m_peaksL == left && m_peaksR == right)
+        return;
+    m_peaksL = left;
+    m_peaksR = right;
+    // Combined max for any code paths that still look at m_peaks
+    const int n = qMax(left.size(), right.size());
+    m_peaks.resize(n);
+    for (int i = 0; i < n; ++i) {
+        const float l = (i < left.size()) ? left.at(i) : 0.f;
+        const float r = (i < right.size()) ? right.at(i) : 0.f;
+        m_peaks[i] = qMax(l, r);
+    }
     invalidateBodyCache();
     update();
 }
@@ -59,6 +79,8 @@ void WaveformWidget::setDisplayMode(DisplayMode mode)
 void WaveformWidget::clear()
 {
     m_peaks.clear();
+    m_peaksL.clear();
+    m_peaksR.clear();
     m_waveDensity = QImage();
     m_spectrogram = QImage();
     m_playbackPos = 0.0;
@@ -316,34 +338,55 @@ void WaveformWidget::paintWaveform(QPainter &p, const QRect &r)
     if (!m_waveDensity.isNull()) {
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
         p.drawImage(r, m_waveDensity);
-        // Zero line for orientation
         const qreal mid = r.center().y();
         p.setPen(QPen(QColor(20, 50, 30), 1, Qt::DotLine));
         p.drawLine(r.left(), int(mid), r.right(), int(mid));
         return;
     }
 
-    const int n = m_peaks.size();
+    const bool stereo = !m_peaksL.isEmpty() && !m_peaksR.isEmpty()
+                        && m_peaksL.size() == m_peaksR.size();
+    const int n = stereo ? m_peaksL.size() : m_peaks.size();
     if (n <= 0 || r.width() <= 0)
         return;
 
     const qreal mid = r.center().y();
     const qreal amp = r.height() / 2.0 - 3.0;
+    const QColor colorL(0, 180, 90, 150);
+    const QColor colorR(40, 160, 220, 150);
+    const QColor outlineL(80, 230, 120);
+    const QColor outlineR(100, 210, 255);
 
-    // Dense peaks: one vertical span per bin (matches pixel columns when bins ≈ width).
-    // Cheap and sharp on large maximized windows; AA path only for coarse peak sets.
+    auto peakAt = [&](int i, bool left) -> qreal {
+        if (stereo)
+            return qBound(0.0, qreal(left ? m_peaksL.at(i) : m_peaksR.at(i)), 1.0);
+        return qBound(0.0, qreal(m_peaks.at(i)), 1.0);
+    };
+
     if (n >= r.width() / 2 || n >= 800) {
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0, 160, 70, 140));
         const qreal step = r.width() / static_cast<qreal>(n);
         for (int i = 0; i < n; ++i) {
-            const qreal v = qBound(0.0, qreal(m_peaks.at(i)), 1.0);
-            if (v <= 1e-4)
-                continue;
             const qreal x = r.left() + i * step;
-            const qreal h = amp * v;
             const int w = qMax(1, int(step + 0.5));
-            p.drawRect(QRectF(x, mid - h, w, h * 2.0));
+            if (stereo) {
+                const qreal vL = peakAt(i, true);
+                const qreal vR = peakAt(i, false);
+                if (vL > 1e-4) {
+                    p.setBrush(colorL);
+                    p.drawRect(QRectF(x, mid - amp * vL, w, amp * vL));
+                }
+                if (vR > 1e-4) {
+                    p.setBrush(colorR);
+                    p.drawRect(QRectF(x, mid, w, amp * vR));
+                }
+            } else {
+                const qreal v = peakAt(i, true);
+                if (v <= 1e-4)
+                    continue;
+                p.setBrush(colorL);
+                p.drawRect(QRectF(x, mid - amp * v, w, amp * v * 2.0));
+            }
         }
         p.setPen(QPen(QColor(20, 50, 30), 1, Qt::DotLine));
         p.drawLine(r.left(), int(mid), r.right(), int(mid));
@@ -351,26 +394,57 @@ void WaveformWidget::paintWaveform(QPainter &p, const QRect &r)
     }
 
     const qreal step = r.width() / static_cast<qreal>(qMax(1, n));
-    QPainterPath path;
-    path.moveTo(r.left(), mid);
-    for (int i = 0; i < n; ++i) {
-        const qreal v = qBound(0.0, qreal(m_peaks.at(i)), 1.0);
-        const qreal x = r.left() + (i + 0.5) * step;
-        path.lineTo(x, mid - amp * v);
+    if (stereo) {
+        QPainterPath pathL, pathR;
+        pathL.moveTo(r.left(), mid);
+        for (int i = 0; i < n; ++i) {
+            const qreal x = r.left() + (i + 0.5) * step;
+            pathL.lineTo(x, mid - amp * peakAt(i, true));
+        }
+        for (int i = n - 1; i >= 0; --i) {
+            const qreal x = r.left() + (i + 0.5) * step;
+            pathL.lineTo(x, mid);
+        }
+        pathL.closeSubpath();
+        pathR.moveTo(r.left(), mid);
+        for (int i = 0; i < n; ++i) {
+            const qreal x = r.left() + (i + 0.5) * step;
+            pathR.lineTo(x, mid + amp * peakAt(i, false));
+        }
+        for (int i = n - 1; i >= 0; --i) {
+            const qreal x = r.left() + (i + 0.5) * step;
+            pathR.lineTo(x, mid);
+        }
+        pathR.closeSubpath();
+        p.setPen(Qt::NoPen);
+        p.setBrush(colorL);
+        p.drawPath(pathL);
+        p.setBrush(colorR);
+        p.drawPath(pathR);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(outlineL, 1.2));
+        p.drawPath(pathL);
+        p.setPen(QPen(outlineR, 1.2));
+        p.drawPath(pathR);
+    } else {
+        QPainterPath path;
+        path.moveTo(r.left(), mid);
+        for (int i = 0; i < n; ++i) {
+            const qreal x = r.left() + (i + 0.5) * step;
+            path.lineTo(x, mid - amp * peakAt(i, true));
+        }
+        for (int i = n - 1; i >= 0; --i) {
+            const qreal x = r.left() + (i + 0.5) * step;
+            path.lineTo(x, mid + amp * peakAt(i, true));
+        }
+        path.closeSubpath();
+        p.setPen(Qt::NoPen);
+        p.setBrush(colorL);
+        p.drawPath(path);
+        p.setPen(QPen(outlineL, 1.2));
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(path);
     }
-    for (int i = n - 1; i >= 0; --i) {
-        const qreal v = qBound(0.0, qreal(m_peaks.at(i)), 1.0);
-        const qreal x = r.left() + (i + 0.5) * step;
-        path.lineTo(x, mid + amp * v);
-    }
-    path.closeSubpath();
-
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0, 160, 70, 120));
-    p.drawPath(path);
-    p.setPen(QPen(QColor(80, 230, 120), 1.2));
-    p.setBrush(Qt::NoBrush);
-    p.drawPath(path);
 
     p.setPen(QPen(QColor(20, 50, 30), 1, Qt::DotLine));
     p.drawLine(r.left(), int(mid), r.right(), int(mid));

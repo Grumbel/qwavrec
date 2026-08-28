@@ -762,15 +762,46 @@ QVector<float> MainWindow::normalizedPeaks(const QVector<float> &raw) const
     return peaks;
 }
 
+void MainWindow::applyPeaksToWaveform(const QVector<float> &left, const QVector<float> &right)
+{
+    if (left.isEmpty()) {
+        m_waveform->setPeaks({});
+        return;
+    }
+    float mx = 0.f;
+    for (float v : left)
+        mx = qMax(mx, v);
+    for (float v : right)
+        mx = qMax(mx, v);
+
+    auto scale = [mx](QVector<float> v) {
+        if (mx > 1e-6f) {
+            for (float &x : v)
+                x /= mx;
+        }
+        return v;
+    };
+
+    if (!right.isEmpty() && right.size() == left.size()) {
+        if (m_autoScaleWaveform)
+            m_waveform->setChannelPeaks(scale(left), scale(right));
+        else
+            m_waveform->setChannelPeaks(left, right);
+    } else {
+        m_waveform->setPeaks(m_autoScaleWaveform ? scale(left) : left);
+    }
+}
+
 void MainWindow::setWaveformFromPcm(const QByteArray &pcm, const QAudioFormat &fmt)
 {
     const int bins = peakBinCount();
+    const WavFile::ChannelPeaks ch = WavFile::channelPeaks(pcm, fmt, bins);
     m_rawPeaks = WavFile::peaks(pcm, fmt, bins);
     if (m_rawPeaks.isEmpty()) {
         m_waveform->clear();
         return;
     }
-    m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+    applyPeaksToWaveform(ch.left, ch.right);
 
     // Oscilloscope-style density image (sub-pixel activity). Scale matches auto-scale peaks.
     float densScale = 1.f;
@@ -2182,8 +2213,9 @@ void MainWindow::onMeterTick()
                 m_liveRecordPeaks = WavFile::peaks(m_recordPcm, liveFmt, qMax(32, peakBinCount() / 2));
                 updateInsertPreviewWaveform();
             } else {
+                const WavFile::ChannelPeaks ch = WavFile::channelPeaks(m_recordPcm, liveFmt, peakBinCount());
                 m_rawPeaks = WavFile::peaks(m_recordPcm, liveFmt, peakBinCount());
-                m_waveform->setPeaks(m_autoScaleWaveform ? normalizedPeaks(m_rawPeaks) : m_rawPeaks);
+                applyPeaksToWaveform(ch.left, ch.right);
             }
         }
         if (m_insertRecord && !m_insertBasePeaks.isEmpty()) {

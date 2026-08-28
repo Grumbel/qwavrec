@@ -22,8 +22,17 @@ struct Info {
 
 Info load(const QString &path);
 
-/** Downsample absolute peaks (about targetBins). Values are 0..1, not normalized. */
+/** Downsample absolute peaks (about targetBins). Values are 0..1, not normalized.
+ *  Multi-channel: max abs across channels per bin. */
 QVector<float> peaks(const QByteArray &pcm, const QAudioFormat &format, int targetBins = 400);
+
+/** Per-channel absolute peaks (left = ch0, right = ch1 or max of ch≥1).
+ *  Mono fills only left; right is empty. Values 0..1, not normalized. */
+struct ChannelPeaks {
+    QVector<float> left;
+    QVector<float> right;
+};
+ChannelPeaks channelPeaks(const QByteArray &pcm, const QAudioFormat &format, int targetBins = 400);
 
 /** Peak-normalize Int16 PCM in place; returns false if not Int16 or empty. */
 bool peakNormalizeInt16(QByteArray &pcm);

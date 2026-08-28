@@ -18,9 +18,12 @@ public:
     explicit WaveformWidget(QWidget *parent = nullptr);
 
     void setPeaks(const QVector<float> &peaks);
+    /** Stereo envelopes (L upper / R lower when painting silhouette). Empty right = mono. */
+    void setChannelPeaks(const QVector<float> &left, const QVector<float> &right);
     /**
      * Intensity-graded waveform (time →, amplitude ↑). Empty clears density.
      * Preferred over setPeaks silhouette when non-null.
+     * Stereo density uses green (L) + cyan (R) phosphor blend.
      */
     void setWaveformDensity(const QImage &image);
     /** Offline spectrogram image (time →, frequency ↑). Empty clears spectrogram. */
@@ -77,6 +80,8 @@ private:
 
     DisplayMode m_mode = DisplayMode::Waveform;
     QVector<float> m_peaks;
+    QVector<float> m_peaksL;
+    QVector<float> m_peaksR;
     /** Oscilloscope-style density image; used in Waveform mode when non-null. */
     QImage m_waveDensity;
     QImage m_spectrogram;

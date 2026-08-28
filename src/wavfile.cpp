@@ -10,6 +10,7 @@
 #include <QVector>
 #include <cmath>
 #include <functional>
+#include <tuple>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -147,6 +148,61 @@ QVector<float> peaks(const QByteArray &pcm, const QAudioFormat &format, int targ
     return out;
 }
 
+ChannelPeaks channelPeaks(const QByteArray &pcm, const QAudioFormat &format, int targetBins)
+{
+    ChannelPeaks out;
+    const int bpf = format.bytesPerFrame();
+    if (bpf <= 0 || pcm.isEmpty() || targetBins <= 0)
+        return out;
+
+    const int frames = pcm.size() / bpf;
+    const int channels = qMax(1, format.channelCount());
+    out.left.reserve(targetBins);
+    if (channels >= 2)
+        out.right.reserve(targetBins);
+    const double step = double(qMax(1, frames)) / targetBins;
+
+    for (int i = 0; i < targetBins; ++i) {
+        const int a = int(i * step);
+        const int b = qMin(int((i + 1) * step), frames);
+        float mxL = 0.f;
+        float mxR = 0.f;
+        for (int f = a; f < b; ++f) {
+            const char *frame = pcm.constData() + f * bpf;
+            for (int c = 0; c < channels; ++c) {
+                float sample = 0.f;
+                switch (format.sampleFormat()) {
+                case QAudioFormat::Int16:
+                    sample = qFromLittleEndian<qint16>(
+                        reinterpret_cast<const uchar *>(frame) + c * 2) / 32768.f;
+                    break;
+                case QAudioFormat::Float:
+                    sample = reinterpret_cast<const float *>(frame)[c];
+                    break;
+                case QAudioFormat::UInt8:
+                    sample = (quint8(frame[c]) - 128) / 128.f;
+                    break;
+                case QAudioFormat::Int32:
+                    sample = qFromLittleEndian<qint32>(
+                        reinterpret_cast<const uchar *>(frame) + c * 4) / 2147483648.f;
+                    break;
+                default:
+                    break;
+                }
+                const float aabs = qAbs(sample);
+                if (c == 0)
+                    mxL = qMax(mxL, aabs);
+                else
+                    mxR = qMax(mxR, aabs);
+            }
+        }
+        out.left.append(mxL);
+        if (channels >= 2)
+            out.right.append(mxR);
+    }
+    return out;
+}
+
 bool peakNormalizeInt16(QByteArray &pcm)
 {
     if (pcm.size() < 2)
@@ -212,9 +268,9 @@ float sampleAt(const QByteArray &pcm, const QAudioFormat &format, int frame)
     return best;
 }
 
-/** Every channel sample in a frame (for density histograms). */
+/** Every channel sample in a frame (for density histograms). fn(sample, channelIndex). */
 void forEachSampleInFrame(const QByteArray &pcm, const QAudioFormat &format, int frame,
-                          const std::function<void(float)> &fn)
+                          const std::function<void(float, int)> &fn)
 {
     const int bpf = format.bytesPerFrame();
     if (bpf <= 0 || frame < 0)
@@ -244,8 +300,45 @@ void forEachSampleInFrame(const QByteArray &pcm, const QAudioFormat &format, int
         default:
             break;
         }
-        fn(sample);
+        fn(sample, c);
     }
+}
+
+QRgb phosphorStereoRgb(float tL, float tR)
+{
+    // L → green phosphor, R → cyan; blend by relative energy
+    tL = qBound(0.f, tL, 1.f);
+    tR = qBound(0.f, tR, 1.f);
+    if (tL <= 0.f && tR <= 0.f)
+        return qRgb(18, 22, 28);
+
+    auto tone = [](float t, float hueR, float hueG, float hueB, float &r, float &g, float &b) {
+        if (t < 0.3f) {
+            const float u = t / 0.3f;
+            r = hueR * 0.2f * u;
+            g = hueG * (0.15f + 0.55f * u);
+            b = hueB * (0.15f + 0.45f * u);
+        } else if (t < 0.7f) {
+            const float u = (t - 0.3f) / 0.4f;
+            r = hueR * (0.2f + 0.5f * u);
+            g = hueG * (0.7f + 0.25f * u);
+            b = hueB * (0.6f + 0.3f * u);
+        } else {
+            const float u = (t - 0.7f) / 0.3f;
+            r = hueR * (0.7f + 0.3f * u);
+            g = hueG * (0.95f + 0.05f * u);
+            b = hueB * (0.9f + 0.1f * u);
+        }
+    };
+
+    float rL = 0, gL = 0, bL = 0, rR = 0, gR = 0, bR = 0;
+    tone(tL, 0.4f, 1.0f, 0.3f, rL, gL, bL);
+    tone(tR, 0.25f, 0.9f, 1.0f, rR, gR, bR);
+    const float w = tL + tR;
+    const float r = (rL * tL + rR * tR) / w;
+    const float g = (gL * tL + gR * tR) / w;
+    const float b = (bL * tL + bR * tR) / w;
+    return qRgb(int(r * 255), int(g * 255), int(b * 255));
 }
 
 /** In-place radix-2 Cooley–Tukey FFT (n must be power of two). */
@@ -373,51 +466,64 @@ QImage waveformDensity(const QByteArray &pcm, const QAudioFormat &format,
     ampBins = qBound(16, ampBins, 512);
     scale = qMax(0.f, scale);
 
-    // Per-column amplitude histograms (counts)
-    QVector<float> counts(timeBins * ampBins, 0.f);
+    const int channels = qMax(1, format.channelCount());
+    const bool stereo = channels >= 2;
+
+    // Per-column amplitude histograms (counts); stereo keeps L/R separate for colour
+    QVector<float> countsL(timeBins * ampBins, 0.f);
+    QVector<float> countsR(stereo ? timeBins * ampBins : 0, 0.f);
     float maxCount = 0.f;
     const double step = double(frames) / double(timeBins);
 
     for (int col = 0; col < timeBins; ++col) {
         const int a = int(col * step);
         const int b = qMin(int((col + 1) * step), frames);
-        float *colCounts = counts.data() + col * ampBins;
+        float *colL = countsL.data() + col * ampBins;
+        float *colR = stereo ? countsR.data() + col * ampBins : nullptr;
         for (int f = a; f < b; ++f) {
-            forEachSampleInFrame(pcm, format, f, [&](float s) {
+            forEachSampleInFrame(pcm, format, f, [&](float s, int ch) {
                 s *= scale;
-                // Map [-1, +1] → [0, ampBins-1]; clamp outliers
                 const float u = (s + 1.f) * 0.5f;
                 int bin = int(u * float(ampBins));
                 if (bin < 0)
                     bin = 0;
                 else if (bin >= ampBins)
                     bin = ampBins - 1;
-                colCounts[bin] += 1.f;
+                if (!stereo || ch == 0)
+                    colL[bin] += 1.f;
+                else if (colR)
+                    colR[bin] += 1.f;
             });
         }
-        for (int row = 0; row < ampBins; ++row)
-            maxCount = qMax(maxCount, colCounts[row]);
+        for (int row = 0; row < ampBins; ++row) {
+            maxCount = qMax(maxCount, colL[row]);
+            if (colR)
+                maxCount = qMax(maxCount, colR[row]);
+        }
     }
 
     if (maxCount < 1.f)
         maxCount = 1.f;
 
-    // Log-scale so sparse high peaks and dense low-level activity both show
     const float logMax = std::log1p(maxCount);
 
     img = QImage(timeBins, ampBins, QImage::Format_RGB32);
-    // Fill near-black background matching widget body
     img.fill(qRgb(18, 22, 28));
     for (int col = 0; col < timeBins; ++col) {
-        const float *colCounts = counts.constData() + col * ampBins;
+        const float *colL = countsL.constData() + col * ampBins;
+        const float *colR = stereo ? countsR.constData() + col * ampBins : nullptr;
         for (int row = 0; row < ampBins; ++row) {
-            const float c = colCounts[row];
-            if (c <= 0.f)
+            const float cL = colL[row];
+            const float cR = colR ? colR[row] : 0.f;
+            if (cL <= 0.f && cR <= 0.f)
                 continue;
-            const float t = std::log1p(c) / logMax;
-            // row 0 = top of image = +1 amplitude; bottom = −1
+            const float tL = std::log1p(cL) / logMax;
+            const float tR = std::log1p(cR) / logMax;
             const int imgRow = ampBins - 1 - row;
-            img.setPixel(col, imgRow, phosphorToRgb(t));
+            if (stereo)
+                img.setPixel(col, imgRow, phosphorStereoRgb(tL, tR));
+            else
+                img.setPixel(col, imgRow, phosphorToRgb(tL));
         }
     }
     return img;
