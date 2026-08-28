@@ -4,7 +4,9 @@
 #include "waveformwidget.h"
 
 #include <QPainter>
+#include <QPixmap>
 #include <QPaintEvent>
+#include <QResizeEvent>
 #include <QPainterPath>
 #include <QMouseEvent>
 #include <QContextMenuEvent>
@@ -25,12 +27,14 @@ void WaveformWidget::setPeaks(const QVector<float> &peaks)
     if (m_peaks == peaks)
         return;
     m_peaks = peaks;
+    invalidateBodyCache();
     update();
 }
 
 void WaveformWidget::setSpectrogram(const QImage &image)
 {
     m_spectrogram = image;
+    invalidateBodyCache();
     update();
 }
 
@@ -39,6 +43,7 @@ void WaveformWidget::setDisplayMode(DisplayMode mode)
     if (m_mode == mode)
         return;
     m_mode = mode;
+    invalidateBodyCache();
     update();
 }
 
@@ -48,7 +53,48 @@ void WaveformWidget::clear()
     m_spectrogram = QImage();
     m_playbackPos = 0.0;
     clearSelection();
+    invalidateBodyCache();
     update();
+}
+
+int WaveformWidget::contentWidth() const
+{
+    return qMax(1, rect().adjusted(1, 1, -1, -1).width());
+}
+
+void WaveformWidget::invalidateBodyCache()
+{
+    m_bodyCacheDirty = true;
+}
+
+void WaveformWidget::ensureBodyCache()
+{
+    if (!m_bodyCacheDirty)
+        return;
+    const QRect r = rect();
+    if (r.width() <= 0 || r.height() <= 0) {
+        m_bodyCache = QPixmap();
+        m_bodyCacheDirty = false;
+        return;
+    }
+    m_bodyCache = QPixmap(r.size());
+    m_bodyCache.fill(QColor(18, 22, 28));
+    QPainter p(&m_bodyCache);
+    p.setRenderHint(QPainter::Antialiasing, m_mode == DisplayMode::Waveform && m_peaks.size() < 800);
+    p.setPen(QColor(40, 48, 58));
+    p.drawRect(0, 0, r.width() - 1, r.height() - 1);
+    const QRect inner = QRect(1, 1, r.width() - 2, r.height() - 2);
+    const bool useSpec = (m_mode == DisplayMode::Spectrogram && !m_spectrogram.isNull());
+    if (useSpec) {
+        paintSpectrogram(p, inner);
+    } else if (!m_peaks.isEmpty()) {
+        paintWaveform(p, inner);
+    } else {
+        p.setPen(QColor(90, 100, 110));
+        p.drawText(inner, Qt::AlignCenter,
+                   m_mode == DisplayMode::Spectrogram ? tr("No spectrogram") : tr("No waveform"));
+    }
+    m_bodyCacheDirty = false;
 }
 
 void WaveformWidget::setPlaybackPosition(qreal pos)
@@ -230,35 +276,57 @@ QSize WaveformWidget::minimumSizeHint() const
     return QSize(200, 64);
 }
 
+void WaveformWidget::resizeEvent(QResizeEvent *event)
+{
+    const int oldW = event->oldSize().width();
+    const int newW = event->size().width();
+    invalidateBodyCache();
+    QWidget::resizeEvent(event);
+    if (newW > 0 && newW != oldW)
+        emit contentWidthChanged(contentWidth());
+}
+
 void WaveformWidget::paintEvent(QPaintEvent *)
 {
+    ensureBodyCache();
     QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing, true);
+    if (!m_bodyCache.isNull())
+        p.drawPixmap(0, 0, m_bodyCache);
+    else
+        p.fillRect(rect(), QColor(18, 22, 28));
     const QRect r = rect().adjusted(1, 1, -1, -1);
-
-    p.fillRect(rect(), QColor(18, 22, 28));
-    p.setPen(QColor(40, 48, 58));
-    p.drawRect(rect().adjusted(0, 0, -1, -1));
-
-    const bool useSpec = (m_mode == DisplayMode::Spectrogram && !m_spectrogram.isNull());
-    if (useSpec) {
-        paintSpectrogram(p, r);
-    } else if (!m_peaks.isEmpty()) {
-        paintWaveform(p, r);
-    } else {
-        p.setPen(QColor(90, 100, 110));
-        p.drawText(r, Qt::AlignCenter,
-                   m_mode == DisplayMode::Spectrogram ? tr("No spectrogram") : tr("No waveform"));
-    }
-
     paintOverlay(p, r);
 }
 
 void WaveformWidget::paintWaveform(QPainter &p, const QRect &r)
 {
     const int n = m_peaks.size();
+    if (n <= 0 || r.width() <= 0)
+        return;
+
     const qreal mid = r.center().y();
     const qreal amp = r.height() / 2.0 - 3.0;
+
+    // Dense peaks: one vertical span per bin (matches pixel columns when bins ≈ width).
+    // Cheap and sharp on large maximized windows; AA path only for coarse peak sets.
+    if (n >= r.width() / 2 || n >= 800) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0, 160, 70, 140));
+        const qreal step = r.width() / static_cast<qreal>(n);
+        for (int i = 0; i < n; ++i) {
+            const qreal v = qBound(0.0, qreal(m_peaks.at(i)), 1.0);
+            if (v <= 1e-4)
+                continue;
+            const qreal x = r.left() + i * step;
+            const qreal h = amp * v;
+            const int w = qMax(1, int(step + 0.5));
+            p.drawRect(QRectF(x, mid - h, w, h * 2.0));
+        }
+        p.setPen(QPen(QColor(20, 50, 30), 1, Qt::DotLine));
+        p.drawLine(r.left(), int(mid), r.right(), int(mid));
+        return;
+    }
+
     const qreal step = r.width() / static_cast<qreal>(qMax(1, n));
     QPainterPath path;
     path.moveTo(r.left(), mid);

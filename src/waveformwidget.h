@@ -7,6 +7,7 @@
 #include <QWidget>
 #include <QVector>
 #include <QImage>
+#include <QPixmap>
 
 class WaveformWidget : public QWidget
 {
@@ -24,6 +25,9 @@ public:
     void clear();
     void setPlaybackPosition(qreal pos); // 0..1
 
+    /** Usable content width in pixels (inner rect); used for peak-bin sizing. */
+    int contentWidth() const;
+
     /** Selection as 0..1 range; invalid if end <= start. */
     bool hasSelection() const { return m_selEnd > m_selStart + 1e-6; }
     qreal selectionStart() const { return m_selStart; }
@@ -35,9 +39,12 @@ signals:
     void seekRequested(qreal pos);
     void selectionChanged(qreal start, qreal end); // end<=start means cleared
     void contextMenuRequested(const QPoint &globalPos);
+    /** Emitted when the drawable width changes so the host can rebuild peaks. */
+    void contentWidthChanged(int width);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
@@ -55,6 +62,8 @@ private:
     qreal xFromPos(qreal pos) const;
     Hit hitTest(qreal x) const;
     void setHover(Hit h);
+    void invalidateBodyCache();
+    void ensureBodyCache();
     void paintWaveform(QPainter &p, const QRect &r);
     void paintSpectrogram(QPainter &p, const QRect &r);
     void paintOverlay(QPainter &p, const QRect &r);
@@ -64,6 +73,9 @@ private:
     DisplayMode m_mode = DisplayMode::Waveform;
     QVector<float> m_peaks;
     QImage m_spectrogram;
+    /** Cached body (wave or spectrogram) without selection/playhead. */
+    QPixmap m_bodyCache;
+    bool m_bodyCacheDirty = true;
     qreal m_playbackPos = 0.0;
     qreal m_selStart = 0.0;
     qreal m_selEnd = 0.0;
