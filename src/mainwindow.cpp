@@ -2277,9 +2277,26 @@ void MainWindow::onMeterTick()
                 m_liveRecordPeaks = WavFile::peaks(m_recordPcm, liveFmt, qMax(32, peakBinCount() / 2));
                 updateInsertPreviewWaveform();
             } else {
+                // Same analysis as setWaveformFromPcm so live intensity matches post-stop.
+                // Peaks were already a full-PCM scan each drain; density is the same order.
                 const WavFile::ChannelPeaks ch = WavFile::channelPeaks(m_recordPcm, liveFmt, peakBinCount());
                 m_rawPeaks = WavFile::peaks(m_recordPcm, liveFmt, peakBinCount());
                 applyPeaksToWaveform(ch.left, ch.right);
+
+                float densScale = 1.f;
+                if (m_autoScaleWaveform) {
+                    float mx = 0.f;
+                    for (float v : m_rawPeaks)
+                        mx = qMax(mx, v);
+                    if (mx > 1e-6f)
+                        densScale = 1.f / mx;
+                }
+                const int timeBins = qBound(64, peakBinCount(), 4096);
+                const int ampBins = qBound(64, m_waveform ? m_waveform->height() : 128, 512);
+                m_waveform->setWaveformDensity(
+                    WavFile::waveformDensity(m_recordPcm, liveFmt, timeBins, ampBins, densScale));
+                m_waveform->setWaveformDensityAbs(
+                    WavFile::waveformDensityAbs(m_recordPcm, liveFmt, timeBins, ampBins, densScale));
             }
         }
         if (m_insertRecord && !m_insertBasePeaks.isEmpty()) {
