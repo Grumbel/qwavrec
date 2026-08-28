@@ -109,6 +109,8 @@ private:
     void finishRecordingStop();
     void refreshTakesPanel();
     void loadTakeAtIndex(int index);
+    /** Load a cache take; if Playing, resume from the start of the new take. */
+    void activateHistoryTake(const QString &path);
     void applySelectionToPlayer();
 
     bool maybeSave();
@@ -216,6 +218,8 @@ private:
     bool m_restoringSettings = false;
     bool m_autoScaleWaveform = false;
     bool m_spectrogramMode = false;
+    /** Skip Stopped→Ready side effects while switching takes under playback. */
+    bool m_resumePlayAfterTakeLoad = false;
     bool m_monitoring = false;
     /** Source name currently opened for the input meter (empty = server default). */
     QString m_monitorSourceName;

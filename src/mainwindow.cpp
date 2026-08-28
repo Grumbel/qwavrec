@@ -1329,13 +1329,15 @@ void MainWindow::updateEditActions()
 {
     const bool idle = (m_state == AppState::Ready || m_state == AppState::Paused
                        || m_state == AppState::Error);
+    const bool playing = (m_state == AppState::Playing);
     const bool hasDoc = m_player && !m_player->pcm().isEmpty();
     const bool hasSel = m_waveform && m_waveform->hasSelection();
     const bool canEdit = idle && hasDoc;
     if (m_cutAction)
         m_cutAction->setEnabled(canEdit && hasSel);
+    // Copy is non-destructive — allowed while playing.
     if (m_copyAction)
-        m_copyAction->setEnabled(canEdit && hasSel);
+        m_copyAction->setEnabled((canEdit || (playing && hasDoc)) && hasSel);
     // Paste works into an empty document (File→New) as well as into an existing take
     if (m_pasteAction)
         m_pasteAction->setEnabled(idle && !m_clipPcm.isEmpty());
@@ -1596,52 +1598,58 @@ void MainWindow::applyDisplayMode()
 }
 
 
-void MainWindow::onUndo()
+void MainWindow::activateHistoryTake(const QString &path)
 {
-    if (m_state == AppState::Recording)
+    if (path.isEmpty() || !QFileInfo::exists(path))
         return;
-    if (m_state == AppState::Playing || m_state == AppState::Paused)
-        if (m_player)
-        m_player->stop();
-    if (m_capture)
-        m_capture->stop();
-    const QString path = m_history.previous();
-    if (path.isEmpty())
-        return;
+
+    const bool resumePlay = (m_state == AppState::Playing);
+    // loadPcm() stops the stream; suppress Stopped→Ready/monitoring until we decide.
+    m_resumePlayAfterTakeLoad = resumePlay;
+
     m_tempPath = path;
     m_isTemporary = false;
     m_savedPath.clear();
     m_modified = true;
     loadDocumentForPlayback(path);
     updateWindowTitle();
-    setAppState(AppState::Ready);
     statusBar()->showMessage(
         tr("Loaded %1").arg(QFileInfo(path).fileName()), 3000);
     refreshTakesPanel();
+
+    if (resumePlay && m_player && m_player->duration() > 0) {
+        m_resumePlayAfterTakeLoad = false;
+        // Same path as onPlay: playback holds the sink; meter restarts when play ends.
+        stopMonitoring();
+        m_player->setSinkName(currentSinkName());
+        m_player->setPosition(0);
+        m_player->play();
+        return;
+    }
+
+    m_resumePlayAfterTakeLoad = false;
+    setAppState(AppState::Ready);
+    startMonitoring();
+}
+
+void MainWindow::onUndo()
+{
+    if (m_state == AppState::Recording)
+        return;
+    const QString path = m_history.previous();
+    if (path.isEmpty())
+        return;
+    activateHistoryTake(path);
 }
 
 void MainWindow::onRedo()
 {
     if (m_state == AppState::Recording)
         return;
-    if (m_state == AppState::Playing || m_state == AppState::Paused)
-        if (m_player)
-        m_player->stop();
-    if (m_capture)
-        m_capture->stop();
     const QString path = m_history.next();
     if (path.isEmpty())
         return;
-    m_tempPath = path;
-    m_isTemporary = false;
-    m_savedPath.clear();
-    m_modified = true;
-    loadDocumentForPlayback(path);
-    updateWindowTitle();
-    setAppState(AppState::Ready);
-    statusBar()->showMessage(
-        tr("Loaded %1").arg(QFileInfo(path).fileName()), 3000);
-    refreshTakesPanel();
+    activateHistoryTake(path);
 }
 
 void MainWindow::onHistory(bool show)
@@ -1666,27 +1674,9 @@ void MainWindow::loadTakeAtIndex(int index)
 {
     if (m_state == AppState::Recording)
         return;
-    if (m_state == AppState::Playing || m_state == AppState::Paused) {
-        if (m_player)
-            m_player->stop();
-    }
     if (!m_history.selectIndex(index))
         return;
-    const QString path = m_history.currentPath();
-    if (path.isEmpty() || !QFileInfo::exists(path))
-        return;
-    m_tempPath = path;
-    m_isTemporary = false;
-    m_savedPath.clear();
-    m_modified = true;
-    loadDocumentForPlayback(path);
-    setAppState(AppState::Ready);
-    updateWindowTitle();
-    statusBar()->showMessage(
-        tr("Loaded %1").arg(QFileInfo(path).fileName()), 3000);
-    // Keep list highlight in sync without re-entry load
-    if (m_takesPanel)
-        m_takesPanel->setTakes(m_history.takes(), m_history.currentIndex());
+    activateHistoryTake(m_history.currentPath());
 }
 
 void MainWindow::onTakesLoadRequested(int index)
@@ -2193,6 +2183,9 @@ void MainWindow::onPlayerStateChanged(PulsePlayback::State state)
         break;
     case PulsePlayback::Stopped:
         if (m_state != AppState::Recording) {
+            // Take switch under active play: activateHistoryTake will call play() next.
+            if (m_resumePlayAfterTakeLoad)
+                break;
             setAppState(AppState::Ready);
             m_playAction->setChecked(false);
             m_playAction->setIcon(themeIcon(QStringLiteral("media-playback-start"), QStyle::SP_MediaPlay));
@@ -2276,8 +2269,9 @@ void MainWindow::updateControls()
     m_openAction->setEnabled(!recording);
     m_saveAction->setEnabled(!recording && (m_modified || hasDoc));
     m_saveAsAction->setEnabled(!recording && hasDoc);
-    m_undoAction->setEnabled((ready || paused) && m_history.canPrevious());
-    m_redoAction->setEnabled((ready || paused) && m_history.canNext());
+    // Take navigation works while playing: new take keeps playing from the start.
+    m_undoAction->setEnabled(!recording && m_history.canPrevious());
+    m_redoAction->setEnabled(!recording && m_history.canNext());
     m_historyAction->setEnabled(true); // panel may stay open; load is gated while recording
     m_normalizeAction->setEnabled((ready || paused) && hasDoc);
     // Record is a latch while recording; otherwise always available so pause
@@ -2285,7 +2279,7 @@ void MainWindow::updateControls()
     m_recordAction->setEnabled(canStartRecord || recording);
     m_playAction->setEnabled((ready || playing || paused) && hasDoc && !recording);
     m_stopAction->setEnabled(playing || paused || recording);
-    m_inputCombo->setEnabled(ready || paused);
+    m_inputCombo->setEnabled(!recording);
     m_outputCombo->setEnabled(!recording);
     // Seek whenever a document is loaded (scrub before/while paused play)
     m_seekSlider->setEnabled(hasDoc && !recording && m_duration > 0);
