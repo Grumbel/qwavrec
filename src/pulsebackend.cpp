@@ -354,7 +354,32 @@ qint64 PulsePlayback::position() const
     return bytesToMs(m_byteOffset);
 }
 
-void PulsePlayback::setSinkName(const QString &name) { m_sinkName = name; }
+void PulsePlayback::setSinkName(const QString &name)
+{
+    if (m_sinkName == name)
+        return;
+    m_sinkName = name;
+
+    // pa_simple binds the sink at open time. Re-open the stream when the
+    // user picks a different output while Playing or Paused so the change
+    // takes effect immediately (preserving position and pause state).
+    if (m_state == Stopped || m_pcm.isEmpty())
+        return;
+
+    const bool wasPaused = (m_state == Paused);
+    const qint64 pos = position();
+
+    m_stop = true;
+    m_pause = false;
+    m_generation.fetch_add(1);
+    if (m_state != Stopped)
+        setState(Stopped);
+
+    setPosition(pos);
+    play();
+    if (wasPaused)
+        pause();
+}
 void PulsePlayback::setVolume(qreal volume) { m_volume = qBound(0.0, volume, 1.0); }
 
 void PulsePlayback::setPlayRange(qint64 startMs, qint64 endMs)
