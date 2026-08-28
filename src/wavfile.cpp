@@ -6,6 +6,12 @@
 #include <QFile>
 #include <QtEndian>
 #include <QtMath>
+#include <QImage>
+#include <QVector>
+#include <cmath>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 namespace WavFile {
 
@@ -154,6 +160,175 @@ bool peakNormalizeInt16(QByteArray &pcm)
         s[i] = qint16(qBound(-32768, v, 32767));
     }
     return true;
+}
+
+namespace {
+
+float sampleAt(const QByteArray &pcm, const QAudioFormat &format, int frame)
+{
+    const int bpf = format.bytesPerFrame();
+    if (bpf <= 0 || frame < 0)
+        return 0.f;
+    const int frames = pcm.size() / bpf;
+    if (frame >= frames)
+        return 0.f;
+    const char *p = pcm.constData() + frame * bpf;
+    switch (format.sampleFormat()) {
+    case QAudioFormat::Int16:
+        return qFromLittleEndian<qint16>(reinterpret_cast<const uchar *>(p)) / 32768.f;
+    case QAudioFormat::Float:
+        return *reinterpret_cast<const float *>(p);
+    case QAudioFormat::UInt8:
+        return (quint8(p[0]) - 128) / 128.f;
+    case QAudioFormat::Int32:
+        return qFromLittleEndian<qint32>(reinterpret_cast<const uchar *>(p)) / 2147483648.f;
+    default:
+        return 0.f;
+    }
+}
+
+/** In-place radix-2 Cooley–Tukey FFT (n must be power of two). */
+void fftRadix2(QVector<float> &re, QVector<float> &im)
+{
+    const int n = re.size();
+    if (n != im.size() || n < 2)
+        return;
+    // bit-reverse permutation
+    for (int i = 1, j = 0; i < n; ++i) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            qSwap(re[i], re[j]);
+            qSwap(im[i], im[j]);
+        }
+    }
+    for (int len = 2; len <= n; len <<= 1) {
+        const float ang = -2.f * float(M_PI) / float(len);
+        const float wlenRe = std::cos(ang);
+        const float wlenIm = std::sin(ang);
+        for (int i = 0; i < n; i += len) {
+            float wRe = 1.f;
+            float wIm = 0.f;
+            for (int j = 0; j < len / 2; ++j) {
+                const float uRe = re[i + j];
+                const float uIm = im[i + j];
+                const float vRe = re[i + j + len / 2] * wRe - im[i + j + len / 2] * wIm;
+                const float vIm = re[i + j + len / 2] * wIm + im[i + j + len / 2] * wRe;
+                re[i + j] = uRe + vRe;
+                im[i + j] = uIm + vIm;
+                re[i + j + len / 2] = uRe - vRe;
+                im[i + j + len / 2] = uIm - vIm;
+                const float nWRe = wRe * wlenRe - wIm * wlenIm;
+                wIm = wRe * wlenIm + wIm * wlenRe;
+                wRe = nWRe;
+            }
+        }
+    }
+}
+
+int nextPow2(int v)
+{
+    int p = 1;
+    while (p < v)
+        p <<= 1;
+    return p;
+}
+
+QRgb magToRgb(float t)
+{
+    // Classic spectrogram ramp: black → indigo → cyan → yellow → white
+    t = qBound(0.f, t, 1.f);
+    float r, g, b;
+    if (t < 0.25f) {
+        const float u = t / 0.25f;
+        r = 0.05f * u;
+        g = 0.05f * u;
+        b = 0.15f + 0.55f * u;
+    } else if (t < 0.5f) {
+        const float u = (t - 0.25f) / 0.25f;
+        r = 0.05f + 0.05f * u;
+        g = 0.05f + 0.75f * u;
+        b = 0.70f + 0.25f * u;
+    } else if (t < 0.75f) {
+        const float u = (t - 0.5f) / 0.25f;
+        r = 0.10f + 0.90f * u;
+        g = 0.80f + 0.15f * u;
+        b = 0.95f - 0.70f * u;
+    } else {
+        const float u = (t - 0.75f) / 0.25f;
+        r = 1.0f;
+        g = 0.95f + 0.05f * u;
+        b = 0.25f + 0.75f * u;
+    }
+    return qRgb(int(r * 255), int(g * 255), int(b * 255));
+}
+
+} // namespace
+
+QImage spectrogram(const QByteArray &pcm, const QAudioFormat &format,
+                   int timeBins, int fftSize)
+{
+    QImage img;
+    const int bpf = format.bytesPerFrame();
+    if (bpf <= 0 || pcm.isEmpty() || timeBins <= 0)
+        return img;
+
+    fftSize = nextPow2(qMax(16, fftSize));
+    const int frames = pcm.size() / bpf;
+    if (frames < 2)
+        return img;
+
+    timeBins = qBound(8, timeBins, 2048);
+    // Cap work for very long takes: one FFT column per time bin only.
+    const int freqBins = fftSize / 2; // positive frequencies, low→high
+
+    QVector<float> window(fftSize);
+    for (int i = 0; i < fftSize; ++i) {
+        // Hann
+        window[i] = 0.5f * (1.f - std::cos(2.f * float(M_PI) * float(i) / float(fftSize - 1)));
+    }
+
+    QVector<float> re(fftSize), im(fftSize);
+    // Collect log-magnitudes then normalize for color mapping
+    QVector<float> mags(timeBins * freqBins);
+    float maxLog = -1e30f;
+    const float floorDb = -80.f; // relative silence floor
+
+    for (int col = 0; col < timeBins; ++col) {
+        // Center of this time column
+        const int center = int((double(col) + 0.5) * double(frames) / double(timeBins));
+        const int start = center - fftSize / 2;
+        for (int i = 0; i < fftSize; ++i) {
+            re[i] = sampleAt(pcm, format, start + i) * window[i];
+            im[i] = 0.f;
+        }
+        fftRadix2(re, im);
+        for (int bin = 0; bin < freqBins; ++bin) {
+            const float power = re[bin] * re[bin] + im[bin] * im[bin];
+            const float db = 10.f * std::log10(power + 1e-20f);
+            mags[col * freqBins + bin] = db;
+            if (db > maxLog)
+                maxLog = db;
+        }
+    }
+
+    if (maxLog < -200.f)
+        maxLog = 0.f;
+
+    img = QImage(timeBins, freqBins, QImage::Format_RGB32);
+    for (int col = 0; col < timeBins; ++col) {
+        for (int bin = 0; bin < freqBins; ++bin) {
+            const float db = mags[col * freqBins + bin];
+            // 0 at floorDb below peak, 1 at peak
+            const float t = (db - (maxLog + floorDb)) / (-floorDb);
+            // Row 0 is top of image; put low frequencies at the bottom
+            const int row = freqBins - 1 - bin;
+            img.setPixel(col, row, magToRgb(t));
+        }
+    }
+    return img;
 }
 
 } // namespace WavFile

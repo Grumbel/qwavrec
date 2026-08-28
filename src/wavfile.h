@@ -8,6 +8,7 @@
 #include <QByteArray>
 #include <QString>
 #include <QVector>
+#include <QImage>
 
 /** Shared WAV header / PCM helpers (Int16/Float/UInt8/Int32). */
 namespace WavFile {
@@ -26,6 +27,14 @@ QVector<float> peaks(const QByteArray &pcm, const QAudioFormat &format, int targ
 
 /** Peak-normalize Int16 PCM in place; returns false if not Int16 or empty. */
 bool peakNormalizeInt16(QByteArray &pcm);
+
+/**
+ * Offline magnitude spectrogram (time × frequency), for display only.
+ * Columns = time (left→right), rows = frequency (low at bottom).
+ * Uses an in-tree real FFT (no extra dependency). Empty image on failure.
+ */
+QImage spectrogram(const QByteArray &pcm, const QAudioFormat &format,
+                   int timeBins = 512, int fftSize = 256);
 
 } // namespace WavFile
 
