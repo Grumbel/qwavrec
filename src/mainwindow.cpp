@@ -32,6 +32,7 @@
 #include <QMessageBox>
 #include <QStandardPaths>
 #include <QDir>
+#include <QList>
 #include <QFileInfo>
 #include <QFile>
 #include <QAudioFormat>
@@ -46,6 +47,7 @@
 #include <QTemporaryFile>
 #include <QSettings>
 #include <QtMath>
+#include <algorithm>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -1593,24 +1595,47 @@ void MainWindow::onTakesLoadRequested(int index)
     loadTakeAtIndex(index);
 }
 
-void MainWindow::onTakesDeleteRequested(int index)
+void MainWindow::onTakesDeleteRequested(const QList<int> &indices)
 {
     if (m_state == AppState::Recording)
         return;
-    if (index < 0 || index >= m_history.takes().size())
+    if (indices.isEmpty())
         return;
-    const QString name = QFileInfo(m_history.takes().at(index)).fileName();
-    if (QMessageBox::question(this, tr("Delete take"),
-            tr("Permanently delete “%1” from the cache?").arg(name))
-        != QMessageBox::Yes)
+
+    QList<int> unique;
+    unique.reserve(indices.size());
+    for (int index : indices) {
+        if (index >= 0 && index < m_history.takes().size() && !unique.contains(index))
+            unique.append(index);
+    }
+    if (unique.isEmpty())
         return;
+    std::sort(unique.begin(), unique.end());
+
+    QString prompt;
+    if (unique.size() == 1) {
+        const QString name = QFileInfo(m_history.takes().at(unique.first())).fileName();
+        prompt = tr("Permanently delete “%1” from the cache?").arg(name);
+    } else {
+        prompt = tr("Permanently delete %1 selected takes from the cache?").arg(unique.size());
+    }
+    if (QMessageBox::question(this, tr("Delete take"), prompt) != QMessageBox::Yes)
+        return;
+
     if (m_state == AppState::Playing || m_state == AppState::Paused) {
         if (m_player)
             m_player->stop();
     }
-    const bool wasCurrent = (index == m_history.currentIndex());
-    if (!m_history.removeAt(index))
-        return;
+
+    const int current = m_history.currentIndex();
+    const bool wasCurrent = unique.contains(current);
+
+    // Remove highest index first so earlier indices stay valid.
+    for (int i = unique.size() - 1; i >= 0; --i) {
+        if (!m_history.removeAt(unique.at(i)))
+            return;
+    }
+
     if (wasCurrent || m_history.takes().isEmpty()) {
         if (m_history.takes().isEmpty()) {
             clearDocument();
@@ -1626,6 +1651,10 @@ void MainWindow::onTakesDeleteRequested(int index)
     }
     updateWindowTitle();
     refreshTakesPanel();
+    statusBar()->showMessage(
+        unique.size() == 1 ? tr("Deleted 1 take from cache")
+                           : tr("Deleted %1 takes from cache").arg(unique.size()),
+        3000);
 }
 
 void MainWindow::onAbout()

@@ -6,6 +6,7 @@
 
 #include <QWidget>
 #include <QStringList>
+#include <QList>
 
 class QListWidget;
 class QListWidgetItem;
@@ -15,6 +16,7 @@ class QPushButton;
 /**
  * Persistent take list for the main window (embedded in a QDockWidget).
  * Not a modal dialog — stays open for fast switching between takes.
+ * Supports multi-select (Ctrl/Shift) for batch delete.
  */
 class TakesPanel : public QWidget
 {
@@ -28,15 +30,17 @@ public:
 
 signals:
     void loadRequested(int index);
-    void deleteRequested(int index);
+    /** Indices into the take list (ascending). May contain more than one. */
+    void deleteRequested(const QList<int> &indices);
 
 private slots:
     void onItemActivated(QListWidgetItem *item);
-    void onCurrentRowChanged(int row);
+    void onSelectionChanged();
     void onDeleteClicked();
 
 private:
     void updateDetails();
+    QList<int> selectedIndices() const;
 
     QLabel *m_header = nullptr;
     QListWidget *m_list = nullptr;

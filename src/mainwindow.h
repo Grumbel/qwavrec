@@ -8,6 +8,7 @@
 #include <QStyle>
 #include <QIcon>
 #include <QVector>
+#include <QList>
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QAudioFormat>
@@ -70,7 +71,7 @@ private slots:
     void onRedo();
     void onHistory(bool show);
     void onTakesLoadRequested(int index);
-    void onTakesDeleteRequested(int index);
+    void onTakesDeleteRequested(const QList<int> &indices);
 
     void onPlayerStateChanged(PulsePlayback::State state);
     void onPlayerPosition(qint64 ms);
