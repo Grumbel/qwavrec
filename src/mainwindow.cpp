@@ -1888,7 +1888,16 @@ void MainWindow::onTakesDeleteRequested(const QList<int> &indices)
     } else {
         prompt = tr("Permanently delete %1 selected takes from the cache?").arg(unique.size());
     }
-    if (QMessageBox::question(this, tr("Delete take"), prompt) != QMessageBox::Yes)
+    // GNOME HIG: name the action (Delete), offer Cancel; avoid Yes/No.
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(unique.size() == 1 ? tr("Delete take") : tr("Delete takes"));
+    box.setText(prompt);
+    auto *deleteBtn = box.addButton(tr("Delete"), QMessageBox::DestructiveRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.exec();
+    if (box.clickedButton() != deleteBtn)
         return;
 
     if (m_state == AppState::Playing || m_state == AppState::Paused) {
