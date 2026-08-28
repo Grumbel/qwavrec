@@ -16,6 +16,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
+#include <QSizePolicy>
 #include <QComboBox>
 #include <QAbstractItemView>
 #include <QLabel>
@@ -557,7 +558,8 @@ void MainWindow::createCentralWidget()
     m_micGainLabel = new QLabel(tr("100%"));
     m_micGainLabel->setMinimumWidth(48);
     m_inputMeter = new LevelMeter;
-    m_inputMeter->setMinimumWidth(120);
+    m_inputMeter->setMinimumWidth(140);
+    m_inputMeter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     m_outputVolumeSlider = new QSlider(Qt::Horizontal);
     m_outputVolumeSlider->setRange(0, 100);
@@ -565,26 +567,39 @@ void MainWindow::createCentralWidget()
     m_playbackVolumeLabel = new QLabel(tr("80%"));
     m_playbackVolumeLabel->setMinimumWidth(48);
     m_outputMeter = new LevelMeter;
-    m_outputMeter->setMinimumWidth(120);
+    m_outputMeter->setMinimumWidth(140);
+    m_outputMeter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    auto *ioForm = new QFormLayout;
-    ioForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    // Each meter sits beside device + gain/volume so it spans both rows
+    // (and grows with the panel when the window is resized).
+    auto *ioColumn = new QVBoxLayout;
+    ioColumn->setSpacing(8);
 
-    ioForm->addRow(tr("Input"), m_inputCombo);
-    auto *inLevelRow = new QHBoxLayout;
-    inLevelRow->addWidget(m_inputVolumeSlider, 1);
-    inLevelRow->addWidget(m_micGainLabel);
-    inLevelRow->addWidget(m_inputMeter, 1);
-    ioForm->addRow(tr("Mic gain"), inLevelRow);
+    auto *inputBlock = new QHBoxLayout;
+    auto *inputForm = new QFormLayout;
+    inputForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    inputForm->addRow(tr("Input"), m_inputCombo);
+    auto *inGainRow = new QHBoxLayout;
+    inGainRow->addWidget(m_inputVolumeSlider, 1);
+    inGainRow->addWidget(m_micGainLabel);
+    inputForm->addRow(tr("Mic gain"), inGainRow);
+    inputBlock->addLayout(inputForm, 1);
+    inputBlock->addWidget(m_inputMeter, 1);
+    ioColumn->addLayout(inputBlock);
 
-    ioForm->addRow(tr("Output"), m_outputCombo);
-    auto *outLevelRow = new QHBoxLayout;
-    outLevelRow->addWidget(m_outputVolumeSlider, 1);
-    outLevelRow->addWidget(m_playbackVolumeLabel);
-    outLevelRow->addWidget(m_outputMeter, 1);
-    ioForm->addRow(tr("Volume"), outLevelRow);
+    auto *outputBlock = new QHBoxLayout;
+    auto *outputForm = new QFormLayout;
+    outputForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    outputForm->addRow(tr("Output"), m_outputCombo);
+    auto *outVolRow = new QHBoxLayout;
+    outVolRow->addWidget(m_outputVolumeSlider, 1);
+    outVolRow->addWidget(m_playbackVolumeLabel);
+    outputForm->addRow(tr("Volume"), outVolRow);
+    outputBlock->addLayout(outputForm, 1);
+    outputBlock->addWidget(m_outputMeter, 1);
+    ioColumn->addLayout(outputBlock);
 
-    mainLayout->addLayout(ioForm);
+    mainLayout->addLayout(ioColumn);
 
     m_waveform = new WaveformWidget;
     m_waveform->setToolTip(tr(

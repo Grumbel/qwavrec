@@ -53,12 +53,13 @@ void LevelMeter::setPeak(qreal peak)
 
 QSize LevelMeter::sizeHint() const
 {
-    return m_stereo ? QSize(120, 28) : QSize(120, 20);
+    // Tall enough to span device + gain/volume rows in the I/O panel.
+    return m_stereo ? QSize(140, 56) : QSize(140, 48);
 }
 
 QSize LevelMeter::minimumSizeHint() const
 {
-    return m_stereo ? QSize(60, 22) : QSize(60, 14);
+    return m_stereo ? QSize(80, 40) : QSize(80, 36);
 }
 
 void LevelMeter::paintBar(QPainter &p, const QRect &r, qreal level, qreal peakHold)
